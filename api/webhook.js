@@ -117,7 +117,7 @@ bot.action('get_invite_link', async (ctx) => {
   const msg = 
     `🔗 <b>Your Personal Invite Link:</b>\n` +
     `<code>${inviteLink}</code>\n\n` +
-    `📊 <b>Your Progress:</b> <code>${currentCount} / ${target}</code> Completed\n` +
+    `📊 <b>Your Progress:</b> <code>${currentCount} / ${target}</code> Completed\n\n` +
     `🎁 <b>Reward:</b> VIP Channel Access Link`;
 
   return ctx.reply(msg, { parse_mode: 'HTML' });
