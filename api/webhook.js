@@ -493,7 +493,6 @@ module.exports = async (req, res) => {
         body = JSON.parse(body);
       }
       if (body) {
-        ensureCommandsRegistered().catch(() => {});
         await bot.handleUpdate(body);
       }
     } catch (err) {
