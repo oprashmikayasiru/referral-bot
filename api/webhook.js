@@ -9,6 +9,7 @@ const BACKUP_CHANNEL_ID = String(process.env.BACKUP_CHANNEL_ID || '-100430630020
 const VIP_CHANNEL_ID = String(process.env.VIP_CHANNEL_ID || '-1004316350899').trim();
 
 let cachedDb = null;
+let commandsRegistered = false;
 
 async function getDb() {
   if (cachedDb) return cachedDb;
@@ -42,6 +43,28 @@ async function getTarget(db) {
 }
 
 const bot = new Telegraf(BOT_TOKEN);
+
+// Admin-only scoped menu commands registration
+async function ensureCommandsRegistered() {
+  if (commandsRegistered) return;
+  try {
+    // 1. Default commands for regular users
+    await bot.telegram.setMyCommands([
+      { command: 'start', description: 'Start Bot & Get Referral Link' }
+    ], { scope: { type: 'default' } });
+
+    // 2. Specific commands visible ONLY to the Admin
+    await bot.telegram.setMyCommands([
+      { command: 'start', description: 'Start Bot & Get Referral Link' },
+      { command: 'admin', description: 'Open Admin Dashboard' },
+      { command: 'reset', description: 'Reset test user (/reset <USER_ID>)' }
+    ], { scope: { type: 'chat', chat_id: ADMIN_ID } });
+
+    commandsRegistered = true;
+  } catch (err) {
+    console.error('Error setting bot commands:', err);
+  }
+}
 
 // User /start Command (Instant - Zero DB Wait)
 bot.start(async (ctx) => {
@@ -114,13 +137,23 @@ bot.action('get_invite_link', async (ctx) => {
   }
 
   const currentCount = inviter ? (inviter.referral_count || 0) : 0;
+
+  // Share Intent URL for seamless 1-tap forwarding
+  const shareText = encodeURIComponent("🔥 Hot Lanka Exclusive Videos & Movies නොමිලේම බලන්න! Join වෙන්න පහත ලින්ක් එක ක්ලික් කරන්න 👇");
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(inviteLink)}&text=${shareText}`;
+
   const msg = 
     `🔗 <b>Your Personal Invite Link:</b>\n` +
-    `<code>${inviteLink}</code>\n\n` +
+    `${inviteLink}\n\n` +
     `📊 <b>Your Progress:</b> <code>${currentCount} / ${target}</code> Completed\n\n` +
     `🎁 <b>Reward:</b> VIP Channel Access Link`;
 
-  return ctx.reply(msg, { parse_mode: 'HTML' });
+  return ctx.reply(msg, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [Markup.button.url('🚀 Share with Friends', shareUrl)]
+    ])
+  });
 });
 
 // Admin Panel Command
@@ -389,10 +422,15 @@ bot.on('chat_member', async (ctx) => {
               `👑 <b>Congratulations!</b>\n\n` +
               `You have successfully reached the target of <code>${target}</code> referrals!\n\n` +
               `🔗 <b>Your VIP Channel Link:</b>\n` +
-              `<code>${vipLinkObj.invite_link}</code>\n\n` +
+              `${vipLinkObj.invite_link}\n\n` +
               `⚠️ <i>Note: Do not share it with others!</i>`;
 
-            await ctx.telegram.sendMessage(inviterId, vipMsg, { parse_mode: 'HTML' });
+            await ctx.telegram.sendMessage(inviterId, vipMsg, {
+              parse_mode: 'HTML',
+              ...Markup.inlineKeyboard([
+                [Markup.button.url('👑 Join VIP Channel', vipLinkObj.invite_link)]
+              ])
+            });
           } catch (vipErr) {
             console.error('Failed to create VIP invite link:', vipErr);
           }
@@ -421,6 +459,8 @@ module.exports = async (req, res) => {
         body = JSON.parse(body);
       }
       if (body) {
+        // Register commands on first incoming event
+        ensureCommandsRegistered().catch(() => {});
         await bot.handleUpdate(body);
       }
     } catch (err) {
