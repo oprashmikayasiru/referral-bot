@@ -31,7 +31,7 @@ let targetLastFetched = 0;
 
 async function getTarget(db) {
   const now = Date.now();
-  if (now - targetLastFetched < 30000) { // Cache for 30s
+  if (now - targetLastFetched < 30000) {
     return cachedTarget;
   }
   const s = await db.collection('settings').findOne({ _id: 'config' });
@@ -44,20 +44,18 @@ async function getTarget(db) {
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// Admin-only scoped menu commands registration
 async function ensureCommandsRegistered() {
   if (commandsRegistered) return;
   try {
-    // 1. Default commands for regular users
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'Start Bot & Get Referral Link' }
     ], { scope: { type: 'default' } });
 
-    // 2. Specific commands visible ONLY to the Admin
     await bot.telegram.setMyCommands([
       { command: 'start', description: 'Start Bot & Get Referral Link' },
       { command: 'admin', description: 'Open Admin Dashboard' },
-      { command: 'reset', description: 'Reset test user (/reset <USER_ID>)' }
+      { command: 'reset', description: 'Reset test friend (/reset <USER_ID>)' },
+      { command: 'resetme', description: 'Reset own inviter test status' }
     ], { scope: { type: 'chat', chat_id: ADMIN_ID } });
 
     commandsRegistered = true;
@@ -66,7 +64,7 @@ async function ensureCommandsRegistered() {
   }
 }
 
-// User /start Command (Instant - Zero DB Wait)
+// User /start Command
 bot.start(async (ctx) => {
   const welcomeText = 
     `👑 <b>VIP REWARDS PROGRAM</b> 👑\n\n` +
@@ -137,8 +135,6 @@ bot.action('get_invite_link', async (ctx) => {
   }
 
   const currentCount = inviter ? (inviter.referral_count || 0) : 0;
-
-  // Share Intent URL for seamless 1-tap forwarding
   const shareText = encodeURIComponent("🔥 Hot Lanka Exclusive Videos & Movies නොමිලේම බලන්න! Join වෙන්න පහත ලින්ක් එක ක්ලික් කරන්න 👇");
   const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(inviteLink)}&text=${shareText}`;
 
@@ -257,6 +253,19 @@ bot.action(/^set_target_(\d+)$/, async (ctx) => {
 
   await ctx.answerCbQuery(`Target set to ${target}!`);
   return ctx.reply(`✅ Referral target updated to <code>${target}</code>!`, { parse_mode: 'HTML' });
+});
+
+// Admin Self-Reset Command (ඔබගේම VIP Claim lock එක reset කර ගැනීමට)
+bot.command('resetme', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
+  const db = await getDb();
+
+  await db.collection('inviters').updateOne(
+    { _id: ctx.from.id },
+    { $set: { referral_count: 0, vip_claimed: false } }
+  );
+
+  return ctx.reply('✅ <b>Your Inviter Profile has been Reset!</b>\n\nReferral count set to 0 and VIP lock removed. You can now test again.', { parse_mode: 'HTML' });
 });
 
 // Safe Reset Command for Second Account Testing
@@ -459,7 +468,6 @@ module.exports = async (req, res) => {
         body = JSON.parse(body);
       }
       if (body) {
-        // Register commands on first incoming event
         ensureCommandsRegistered().catch(() => {});
         await bot.handleUpdate(body);
       }
