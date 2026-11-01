@@ -70,9 +70,9 @@ bot.start(async (ctx) => {
     `👑 <b>VIP REWARDS PROGRAM</b> 👑\n\n` +
     `යාලුවන්ට Share කරලා <b>VIP Channel Access</b> නොමිලේම දිනාගන්න! 🎁\n\n` +
     `<b>Steps:</b>\n` +
-    `🔹 <b>Get Link:</b> පහත Button එකෙන් ඔබේ Link එක ගන්න\n` +
-    `🔹 <b>Share:</b> යාලුවන්ට යවන්න (Join Main Channel + Video Unlock)\n` +
-    `🔹 <b>Win VIP:</b> Target එක පිරුණු ගමන් Instant VIP Link!`;
+    `🔹 පහත Button එකෙන් ඔබේ Link එක ගන්න\n` +
+    `🔹 යාලුවන්ට යවන්න (Join Main Channel + Video Unlock)\n` +
+    `🔹 Target එක පිරුණු ගමන් Instant VIP Link !`;
 
   return ctx.reply(welcomeText, {
     parse_mode: 'HTML',
@@ -135,7 +135,7 @@ bot.action('get_invite_link', async (ctx) => {
   }
 
   const currentCount = inviter ? (inviter.referral_count || 0) : 0;
-  const shareText = encodeURIComponent("🔥 Hot Lanka Exclusive Videos & Movies නොමිලේම බලන්න! Join වෙන්න පහත ලින්ක් එක ක්ලික් කරන්න 👇");
+  const shareText = encodeURIComponent("🔥 Hot Lanka Exclusive Videos බලන්න!\n Join වෙන්න පහත ලින්ක් එක ක්ලික් කරන්න 👇");
   const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(inviteLink)}&text=${shareText}`;
 
   const msg = 
