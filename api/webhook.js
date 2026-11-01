@@ -7,60 +7,44 @@ const ADMIN_ID = String(process.env.ADMIN_ID || '5411921025').trim();
 const MAIN_CHANNEL_ID = String(process.env.MAIN_CHANNEL_ID || '-1004309315754').trim();
 const BACKUP_CHANNEL_ID = String(process.env.BACKUP_CHANNEL_ID || '-1004306300202').trim();
 const VIP_CHANNEL_ID = String(process.env.VIP_CHANNEL_ID || '-1004316350899').trim();
-const BOT_USERNAME = process.env.BOT_USERNAME || 'HotLankaVipRefer_bot';
 
-let cachedClient = null;
-let indexesCreated = false;
+let cachedDb = null;
 
 async function getDb() {
-  if (!cachedClient) {
-    cachedClient = new MongoClient(MONGODB_URI, {
-      maxPoolSize: 10,
-      minPoolSize: 1,
-      maxIdleTimeMS: 60000
-    });
-    await cachedClient.connect();
-  }
-  const db = cachedClient.db('vip_referral_bot');
-
-  if (!indexesCreated) {
-    db.collection('invitees').createIndex({ invitee_id: 1 }, { unique: true }).catch(() => {});
-    db.collection('inviters').createIndex({ invite_link: 1 }).catch(() => {});
-    indexesCreated = true;
-  }
-
-  return db;
+  if (cachedDb) return cachedDb;
+  const client = new MongoClient(MONGODB_URI, {
+    maxPoolSize: 10,
+    minPoolSize: 1,
+    maxIdleTimeMS: 60000,
+    connectTimeoutMS: 5000,
+    socketTimeoutMS: 10000
+  });
+  await client.connect();
+  cachedDb = client.db('vip_referral_bot');
+  return cachedDb;
 }
 
-async function getSettings(db) {
-  const col = db.collection('settings');
-  let s = await col.findOne({ _id: 'config' });
-  if (!s) {
-    s = { _id: 'config', target_referrals: 5 };
-    await col.insertOne(s);
+// In-memory cache for fast target lookup
+let cachedTarget = 5;
+let targetLastFetched = 0;
+
+async function getTarget(db) {
+  const now = Date.now();
+  if (now - targetLastFetched < 30000) { // Cache for 30s
+    return cachedTarget;
   }
-  return s;
+  const s = await db.collection('settings').findOne({ _id: 'config' });
+  if (s && s.target_referrals) {
+    cachedTarget = s.target_referrals;
+  }
+  targetLastFetched = now;
+  return cachedTarget;
 }
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// User /start Command
+// User /start Command (Instant - Zero DB Wait)
 bot.start(async (ctx) => {
-  if (!ctx.from) return;
-  const userId = ctx.from.id;
-  const db = await getDb();
-
-  const inviter = await db.collection('inviters').findOne({ _id: userId });
-
-  if (inviter && inviter.vip_claimed) {
-    return ctx.reply(
-      "🚫 <b>Access Denied!</b>\n\n" +
-      "You have already claimed your VIP reward once. Each user is allowed to claim VIP access only once.\n\n" +
-      "Further referrals will not be counted.",
-      { parse_mode: 'HTML' }
-    );
-  }
-
   const welcomeText = 
     `👑 <b>VIP REWARDS PROGRAM</b> 👑\n\n` +
     `යාලුවන්ට Share කරලා <b>VIP Channel Access</b> නොමිලේම දිනාගන්න! 🎁\n\n` +
@@ -81,13 +65,15 @@ bot.start(async (ctx) => {
 bot.action('get_invite_link', async (ctx) => {
   if (!ctx.from) return ctx.answerCbQuery();
   const userId = ctx.from.id;
-  const db = await getDb();
-  const settings = await getSettings(db);
+  await ctx.answerCbQuery('Processing...');
 
-  let inviter = await db.collection('inviters').findOne({ _id: userId });
+  const db = await getDb();
+  const [inviter, target] = await Promise.all([
+    db.collection('inviters').findOne({ _id: userId }),
+    getTarget(db)
+  ]);
 
   if (inviter && inviter.vip_claimed) {
-    await ctx.answerCbQuery();
     return ctx.reply(
       "🚫 <b>Access Denied!</b>\n\nYou have already claimed your VIP reward once.",
       { parse_mode: 'HTML' }
@@ -123,21 +109,17 @@ bot.action('get_invite_link', async (ctx) => {
       );
     } catch (err) {
       console.error('Invite link generation error:', err);
-      await ctx.answerCbQuery('Failed to create link. Ensure bot is admin in Main Channel.');
       return ctx.reply("❌ Error generating invite link. Please make sure the bot is an Admin in the Main Channel.");
     }
   }
 
   const currentCount = inviter ? (inviter.referral_count || 0) : 0;
-  const target = settings.target_referrals || 5;
-
   const msg = 
     `🔗 <b>Your Personal Invite Link:</b>\n` +
     `<code>${inviteLink}</code>\n\n` +
     `📊 <b>Your Progress:</b> <code>${currentCount} / ${target}</code> Completed\n` +
     `🎁 <b>Reward:</b> VIP Channel Access Link`;
 
-  await ctx.answerCbQuery();
   return ctx.reply(msg, { parse_mode: 'HTML' });
 });
 
@@ -145,13 +127,13 @@ bot.action('get_invite_link', async (ctx) => {
 bot.command('admin', async (ctx) => {
   if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
   const db = await getDb();
-  const settings = await getSettings(db);
 
-  const [totalInviters, pendingCount, verifiedCount, vipClaimedCount] = await Promise.all([
-    db.collection('inviters').countDocuments(),
+  const [totalInviters, pendingCount, verifiedCount, vipClaimedCount, target] = await Promise.all([
+    db.collection('inviters').estimatedDocumentCount(),
     db.collection('invitees').countDocuments({ is_counted: false }),
     db.collection('invitees').countDocuments({ is_counted: true }),
-    db.collection('inviters').countDocuments({ vip_claimed: true })
+    db.collection('inviters').countDocuments({ vip_claimed: true }),
+    getTarget(db)
   ]);
 
   const panelText = 
@@ -160,7 +142,7 @@ bot.command('admin', async (ctx) => {
     `⏳ <b>Pending Friends:</b> <code>${pendingCount}</code>\n` +
     `✅ <b>Verified Referrals:</b> <code>${verifiedCount}</code>\n` +
     `👑 <b>VIP Rewards Given:</b> <code>${vipClaimedCount}</code>\n\n` +
-    `🎯 <b>Current Target:</b> <code>${settings.target_referrals}</code> Referrals`;
+    `🎯 <b>Current Target:</b> <code>${target}</code> Referrals`;
 
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback('🎯 Change Target', 'open_target_menu')],
@@ -172,14 +154,15 @@ bot.command('admin', async (ctx) => {
 
 bot.action('refresh_admin_panel', async (ctx) => {
   if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  await ctx.answerCbQuery('Refreshing...');
   const db = await getDb();
-  const settings = await getSettings(db);
 
-  const [totalInviters, pendingCount, verifiedCount, vipClaimedCount] = await Promise.all([
-    db.collection('inviters').countDocuments(),
+  const [totalInviters, pendingCount, verifiedCount, vipClaimedCount, target] = await Promise.all([
+    db.collection('inviters').estimatedDocumentCount(),
     db.collection('invitees').countDocuments({ is_counted: false }),
     db.collection('invitees').countDocuments({ is_counted: true }),
-    db.collection('inviters').countDocuments({ vip_claimed: true })
+    db.collection('inviters').countDocuments({ vip_claimed: true }),
+    getTarget(db)
   ]);
 
   const panelText = 
@@ -188,25 +171,24 @@ bot.action('refresh_admin_panel', async (ctx) => {
     `⏳ <b>Pending Friends:</b> <code>${pendingCount}</code>\n` +
     `✅ <b>Verified Referrals:</b> <code>${verifiedCount}</code>\n` +
     `👑 <b>VIP Rewards Given:</b> <code>${vipClaimedCount}</code>\n\n` +
-    `🎯 <b>Current Target:</b> <code>${settings.target_referrals}</code> Referrals`;
+    `🎯 <b>Current Target:</b> <code>${target}</code> Referrals`;
 
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback('🎯 Change Target', 'open_target_menu')],
     [Markup.button.callback('🔄 Refresh', 'refresh_admin_panel')]
   ]);
 
-  await ctx.answerCbQuery('Refreshed!');
   return ctx.editMessageText(panelText, { parse_mode: 'HTML', ...keyboard });
 });
 
 bot.action('open_target_menu', async (ctx) => {
   if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
   const db = await getDb();
-  const settings = await getSettings(db);
+  const target = await getTarget(db);
 
   const text = 
     `🎯 <b>Select Referral Target</b>\n\n` +
-    `Current Target: <code>${settings.target_referrals}</code>\n` +
+    `Current Target: <code>${target}</code>\n` +
     `Choose how many valid referrals are needed for VIP access:`;
 
   const keyboard = Markup.inlineKeyboard([
@@ -230,8 +212,10 @@ bot.action('open_target_menu', async (ctx) => {
 bot.action(/^set_target_(\d+)$/, async (ctx) => {
   if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
   const target = parseInt(ctx.match[1]);
-  const db = await getDb();
+  cachedTarget = target;
+  targetLastFetched = Date.now();
 
+  const db = await getDb();
   await db.collection('settings').updateOne(
     { _id: 'config' },
     { $set: { target_referrals: target } },
@@ -321,26 +305,16 @@ bot.on('chat_join_request', async (ctx) => {
     const req = ctx.chatJoinRequest;
     if (!req) return;
 
-    const channelId = String(req.chat.id);
-    if (channelId !== MAIN_CHANNEL_ID) return;
+    if (String(req.chat.id) !== MAIN_CHANNEL_ID) return;
 
     const inviteeId = req.from.id;
     const inviteLink = req.invite_link ? req.invite_link.invite_link : null;
     if (!inviteLink) return;
 
     const db = await getDb();
-
-    // Check if link belongs to an inviter
     const inviter = await db.collection('inviters').findOne({ invite_link: inviteLink });
-    if (!inviter) return;
+    if (!inviter || inviter._id === inviteeId || inviter.vip_claimed) return;
 
-    // Block Self-Referral
-    if (inviter._id === inviteeId) return;
-
-    // Do not count if Inviter has already claimed VIP
-    if (inviter.vip_claimed) return;
-
-    // Insert only if invitee does not already exist
     await db.collection('invitees').updateOne(
       { invitee_id: inviteeId },
       {
@@ -366,18 +340,15 @@ bot.on('chat_member', async (ctx) => {
     const cm = ctx.chatMember;
     if (!cm) return;
 
-    const channelId = String(cm.chat.id);
-    if (channelId !== BACKUP_CHANNEL_ID) return;
+    if (String(cm.chat.id) !== BACKUP_CHANNEL_ID) return;
 
     const newStatus = cm.new_chat_member ? cm.new_chat_member.status : null;
     const oldStatus = cm.old_chat_member ? cm.old_chat_member.status : null;
 
-    // Triggers only when joining Backup Channel
     if (newStatus === 'member' && ['left', 'kicked'].includes(oldStatus)) {
       const inviteeId = cm.new_chat_member.user.id;
       const db = await getDb();
 
-      // Atomic Lock to verify and prevent double counting
       const updateResult = await db.collection('invitees').findOneAndUpdate(
         { invitee_id: inviteeId, is_counted: false },
         { $set: { backup_joined: true, is_counted: true, verified_at: new Date() } },
@@ -388,10 +359,8 @@ bot.on('chat_member', async (ctx) => {
       if (!record || !record.inviter_id) return;
 
       const inviterId = record.inviter_id;
-      const settings = await getSettings(db);
-      const target = settings.target_referrals || 5;
+      const target = await getTarget(db);
 
-      // Increment inviter count
       const inviterUpdate = await db.collection('inviters').findOneAndUpdate(
         { _id: inviterId },
         { $inc: { referral_count: 1 } },
@@ -403,9 +372,7 @@ bot.on('chat_member', async (ctx) => {
 
       const currentCount = updatedInviter.referral_count || 0;
 
-      // Check if target is reached and not already claimed
       if (currentCount >= target && !updatedInviter.vip_claimed) {
-        // Lock VIP claim
         const claimLock = await db.collection('inviters').findOneAndUpdate(
           { _id: inviterId, vip_claimed: false },
           { $set: { vip_claimed: true, vip_claimed_at: new Date() } }
@@ -431,7 +398,6 @@ bot.on('chat_member', async (ctx) => {
           }
         }
       } else if (!updatedInviter.vip_claimed) {
-        // Referral step progress notification
         const progressMsg = 
           `✅ <b>New Referral Completed!</b>\n\n` +
           `A friend has joined using your link and unlocked a video.\n\n` +
