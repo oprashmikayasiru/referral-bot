@@ -2,7 +2,7 @@ const { Telegraf, Markup } = require('telegraf');
 const { MongoClient } = require('mongodb');
 
 const BOT_TOKEN = process.env.BOT_TOKEN || '9135987312:AAGkmP4rKSg14A8y1Sc4LpIEynNnDLJTHFw';
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://oprashmikayasiru_db_user:AMcK5sVpxXr3R7VT@cluster0.ulukf3s.mongodb.net/?retryWrites=true&w=majority';
+const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://oprashmikayasiru_db_user:AMcK5sVpxXr3R7VT@cluster0.ulukf3s.mongodb.net/vip_referral_bot?retryWrites=true&w=majority';
 const ADMIN_ID = String(process.env.ADMIN_ID || '5411921025').trim();
 const MAIN_CHANNEL_ID = String(process.env.MAIN_CHANNEL_ID || '-1004309315754').trim();
 const BACKUP_CHANNEL_ID = String(process.env.BACKUP_CHANNEL_ID || '-1004306300202').trim();
@@ -450,12 +450,15 @@ bot.on('chat_member', async (ctx) => {
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
     try {
-      if (req.body && typeof req.body === 'object') {
-        // Background async processing without blocking Vercel
-        bot.handleUpdate(req.body).catch(err => console.error('Update handling error:', err));
+      let body = req.body;
+      if (typeof body === 'string') {
+        body = JSON.parse(body);
+      }
+      if (body) {
+        await bot.handleUpdate(body);
       }
     } catch (err) {
-      console.error('Webhook error:', err);
+      console.error('Webhook processing error:', err);
     }
     return res.status(200).send('OK');
   }
