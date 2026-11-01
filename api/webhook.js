@@ -452,7 +452,7 @@ bot.on('chat_member', async (ctx) => {
         const progressMsg = 
           `✅ <b>New Referral Completed!</b>\n\n` +
           `A friend has joined using your link and unlocked a video.\n\n` +
-          `📊 <b>Current Progress:</b> <code>${currentCount} / ${target}</code>\n` +
+          `📊 <b>Current Progress:</b> <code>${currentCount} / ${target}</code>\n\n` +
           `Keep going to unlock your VIP link!`;
 
         await ctx.telegram.sendMessage(inviterId, progressMsg, { parse_mode: 'HTML' }).catch(() => {});
