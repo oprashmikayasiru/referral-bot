@@ -63,11 +63,11 @@ bot.start(async (ctx) => {
 
   const welcomeText = 
     `👑 <b>Free VIP Access Referral Program</b> 👑\n\n` +
-    `✨ VIP Channel එකට Free Access ලබාගැනීමට පහත පියවර සම්පූර්ණ කරන්න:\n\n` +
-    `1️⃣ පහත බොත්තම මගින් Invite Link එක ලබාගන්න. 🔗\n` +
-    `2️⃣ එම ලින්ක් එක ඔබේ මිතුරන් වෙත යවන්න. 👥\n` +
-    `3️⃣ මිතුරා Main Channel එකට සම්බන්ධ වී Video එකක් Unlock කරගත යුතුය. 🔓🎬\n` +
-    `4️⃣ නියමිත මිතුරන් සංඛ්‍යාව සම්පූර්ණ වූ වහාම ඔබට VIP Channel Access හිමිවේ. 🎁`;
+    `✨ <b>VIP Channel එකට Free Access ලබාගැනීමට පහත පියවර සම්පූර්ණ කරන්න:</b>\n\n` +
+    `1️⃣ <b>පහත බොත්තම මගින් Invite Link එක ලබාගන්න.</b> 🔗\n` +
+    `2️⃣ <b>එම ලින්ක් එක ඔබේ මිතුරන් වෙත යවන්න.</b> 👥\n` +
+    `3️⃣ <b>මිතුරා Main Channel එකට සම්බන්ධ වී Video එකක් Unlock කරගත යුතුය.</b> 🔓🎬\n` +
+    `4️⃣ <b>නියමිත මිතුරන් සංඛ්‍යාව සම්පූර්ණ වූ වහාම ඔබට VIP Channel Access හිමිවේ.</b> 🎁`;
 
   return ctx.reply(welcomeText, {
     parse_mode: 'HTML',
