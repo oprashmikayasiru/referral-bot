@@ -1,0 +1,10 @@
+{
+  "name": "vip-referral-bot",
+  "version": "1.0.0",
+  "description": "Telegram VIP Referral Tracking Bot",
+  "main": "api/webhook.js",
+  "dependencies": {
+    "mongodb": "^6.5.0",
+    "telegraf": "^4.16.3"
+  }
+}
