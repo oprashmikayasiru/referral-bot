@@ -146,6 +146,8 @@ bot.action('get_invite_link', async (ctx) => {
 
   return ctx.reply(msg, {
     parse_mode: 'HTML',
+    link_preview_options: { is_disabled: true },
+    disable_web_page_preview: true,
     ...Markup.inlineKeyboard([
       [Markup.button.url('🚀 Share with Friends', shareUrl)]
     ])
@@ -436,6 +438,8 @@ bot.on('chat_member', async (ctx) => {
 
             await ctx.telegram.sendMessage(inviterId, vipMsg, {
               parse_mode: 'HTML',
+              link_preview_options: { is_disabled: true },
+              disable_web_page_preview: true,
               ...Markup.inlineKeyboard([
                 [Markup.button.url('👑 Join VIP Channel', vipLinkObj.invite_link)]
               ])
