@@ -136,8 +136,8 @@ bot.action('get_invite_link', async (ctx) => {
 
   const currentCount = inviter ? (inviter.referral_count || 0) : 0;
   // ලින්ක් එක යටට වැටෙන සේ සම්පූර්ණ Text එක සකස් කිරීම
-  const fullShareText = `🔥 Hot Lanka Exclusive Videos බලන්න!\nJoin වෙන්න පහත ලින්ක් එක ක්ලික් කරන්න 👇\n\n${inviteLink}`;
-  const shareUrl = `https://t.me/share/url?text=${encodeURIComponent(fullShareText)}`;
+  const shareText = encodeURIComponent("🔥 Hot Lanka Exclusive Videos බලන්න!\nJoin වෙන්න පහත ලින්ක් එක ක්ලික් කරන්න 👇");
+  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(inviteLink)}&text=${shareText}`;
   
   const msg = 
     `🔗 <b>Your Personal Invite Link:</b>\n` +
