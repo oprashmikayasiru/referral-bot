@@ -48,14 +48,14 @@ async function ensureCommandsRegistered() {
   if (commandsRegistered) return;
   try {
     await bot.telegram.setMyCommands([
-      { command: 'start', description: 'Start Bot & Get Referral Link' }
+      { command: 'start', description: 'Start Bot & Get Link' }
     ], { scope: { type: 'default' } });
 
     await bot.telegram.setMyCommands([
-      { command: 'start', description: 'Start Bot & Get Referral Link' },
-      { command: 'admin', description: 'Open Admin Dashboard' },
-      { command: 'reset', description: 'Reset test friend (/reset <USER_ID>)' },
-      { command: 'resetme', description: 'Reset own inviter test status' }
+      { command: 'start', description: 'Start Bot' },
+      { command: 'admin', description: 'Admin Panel' },
+      { command: 'reset', description: 'Reset Test Account' },
+      { command: 'resetme', description: 'Reset Inviter Status' }
     ], { scope: { type: 'chat', chat_id: ADMIN_ID } });
 
     commandsRegistered = true;
@@ -257,7 +257,7 @@ bot.action(/^set_target_(\d+)$/, async (ctx) => {
   return ctx.reply(`✅ Referral target updated to <code>${target}</code>!`, { parse_mode: 'HTML' });
 });
 
-// Admin Self-Reset Command (ඔබගේම VIP Claim lock එක reset කර ගැනීමට)
+// Admin Self-Reset Command
 bot.command('resetme', async (ctx) => {
   if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
   const db = await getDb();
@@ -270,15 +270,14 @@ bot.command('resetme', async (ctx) => {
   return ctx.reply('✅ <b>Your Inviter Profile has been Reset!</b>\n\nReferral count set to 0 and VIP lock removed. You can now test again.', { parse_mode: 'HTML' });
 });
 
-// Safe Reset Command for Second Account Testing
+// Safe Reset Command (Default: 8226533559)
 bot.command('reset', async (ctx) => {
   if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
   const parts = ctx.message.text.trim().split(/\s+/);
-  if (parts.length < 2) {
-    return ctx.reply('⚠️ Usage: <code>/reset &lt;USER_ID&gt;</code>', { parse_mode: 'HTML' });
-  }
+  
+  // Default to 8226533559 if no ID is specified
+  const targetId = parts.length >= 2 ? parseInt(parts[1]) : 8226533559;
 
-  const targetId = parseInt(parts[1]);
   if (isNaN(targetId)) {
     return ctx.reply('❌ Invalid User ID.');
   }
