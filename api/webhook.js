@@ -135,10 +135,7 @@ bot.action('get_invite_link', async (ctx) => {
   }
 
   const currentCount = inviter ? (inviter.referral_count || 0) : 0;
-  // ලින්ක් එක යටට වැටෙන සේ සම්පූර්ණ Text එක සකස් කිරීම
-  const shareText = encodeURIComponent("🔥 Hot Lanka Exclusive Videos බලන්න!\nJoin වෙන්න පහත ලින්ක් එක ක්ලික් කරන්න 👇");
-  const shareUrl = `https://t.me/share/url?url=${encodeURIComponent(inviteLink)}&text=${shareText}`;
-  
+
   const msg = 
     `🔗 <b>Your Personal Invite Link:</b>\n` +
     `${inviteLink}\n\n` +
@@ -150,8 +147,32 @@ bot.action('get_invite_link', async (ctx) => {
     link_preview_options: { is_disabled: true },
     disable_web_page_preview: true,
     ...Markup.inlineKeyboard([
-      [Markup.button.url('🚀 Share with Friends', shareUrl)]
+      [Markup.button.callback('📝 Generate Invite Message', 'gen_invite_msg')]
     ])
+  });
+});
+
+// Button: Generate Ready-to-Forward Invite Message
+bot.action('gen_invite_msg', async (ctx) => {
+  if (!ctx.from) return ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  await ctx.answerCbQuery();
+
+  const db = await getDb();
+  const inviter = await db.collection('inviters').findOne({ _id: userId });
+
+  if (!inviter || !inviter.invite_link) {
+    return ctx.reply("⚠️ කරුණාකර මුලින් 'Get Invite Link' ලබාගන්න.");
+  }
+
+  const forwardMsg = 
+    `🔥 Hot Lanka Exclusive Videos බලන්න!\n` +
+    `Join වෙන්න පහත ලින්ක් එක ක්ලික් කරන්න 👇\n\n` +
+    `${inviter.invite_link}`;
+
+  return ctx.reply(forwardMsg, {
+    link_preview_options: { is_disabled: true },
+    disable_web_page_preview: true
   });
 });
 
