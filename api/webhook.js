@@ -170,18 +170,24 @@ bot.action('gen_invite_msg', async (ctx) => {
   const caption = 
     `<b>Hot Lanka Exclusive !</b>🔥 \n` +
     `<b>Tap here to Join</b> 👇\n` +
-    `🔗 ${inviter.invite_link}`;
+    `${inviter.invite_link}`;
+
+  const inviteKeyboard = Markup.inlineKeyboard([
+    [Markup.button.url('🔗 Join Hot Lanka', inviter.invite_link)]
+  ]);
 
   if (config.bannerFileId) {
     return ctx.replyWithPhoto(config.bannerFileId, {
       caption: caption,
-      parse_mode: 'HTML'
+      parse_mode: 'HTML',
+      ...inviteKeyboard
     }).catch(async (err) => {
       console.error('Failed to send photo, falling back to text:', err);
       return ctx.reply(caption, {
         parse_mode: 'HTML',
         link_preview_options: { is_disabled: true },
-        disable_web_page_preview: true
+        disable_web_page_preview: true,
+        ...inviteKeyboard
       });
     });
   }
@@ -189,7 +195,8 @@ bot.action('gen_invite_msg', async (ctx) => {
   return ctx.reply(caption, {
     parse_mode: 'HTML',
     link_preview_options: { is_disabled: true },
-    disable_web_page_preview: true
+    disable_web_page_preview: true,
+    ...inviteKeyboard
   });
 });
 
