@@ -131,9 +131,10 @@ bot.action('get_invite_link', async (ctx) => {
   const currentCount = inviter ? (inviter.referral_count || 0) : 0;
   const target = config.target;
 
+  // Clickable Blue Link (No code tags) + No Web Preview
   const msg = 
     `🔗 <b>Your Personal Invite Link:</b>\n` +
-    `<code>${inviteLink}</code>\n\n` +
+    `${inviteLink}\n\n` +
     `📊 <b>Progress:</b> <code>${currentCount} / ${target}</code>`;
 
   return ctx.reply(msg, {
@@ -141,8 +142,10 @@ bot.action('get_invite_link', async (ctx) => {
     link_preview_options: { is_disabled: true },
     disable_web_page_preview: true,
     ...Markup.inlineKeyboard([
-      [Markup.button.callback('📝 Generate Invite Message', 'gen_invite_msg')],
-      [Markup.button.callback('📊 My Progress', 'my_progress')]
+      [
+        Markup.button.callback('📝 Invite Msg', 'gen_invite_msg'),
+        Markup.button.callback('📊 Progress', 'my_progress')
+      ]
     ])
   });
 });
@@ -163,6 +166,7 @@ bot.action('gen_invite_msg', async (ctx) => {
     return ctx.reply("⚠️ Please click '🔗 Get Invite Link' first.");
   }
 
+  // Clickable link format without preview
   const caption = 
     `🔥 <b>Hot Lanka Exclusive Videos බලන්න!</b>\n` +
     `👇 Tap here to Join 👇\n\n` +
@@ -189,11 +193,10 @@ bot.action('gen_invite_msg', async (ctx) => {
   });
 });
 
-// Button: My Progress
-bot.action('my_progress', async (ctx) => {
+// Button: My Progress (Edits the message in-place on refresh)
+bot.action(['my_progress', 'refresh_user_progress'], async (ctx) => {
   if (!ctx.from) return ctx.answerCbQuery();
   const userId = ctx.from.id;
-  await ctx.answerCbQuery();
 
   const db = await getDb();
   const [inviter, config] = await Promise.all([
@@ -211,11 +214,22 @@ bot.action('my_progress', async (ctx) => {
     `• <b>Remaining:</b> <code>${remaining}</code> more needed\n\n` +
     `⚠️ <i>මිතුරන් Main Channel එකට Join වී, වීඩියෝවක් Unlock කළ විට පමණක් Referral count වේ.</i>`;
 
+  const keyboard = Markup.inlineKeyboard([
+    [Markup.button.callback('🔄 Refresh Progress', 'refresh_user_progress')]
+  ]);
+
+  if (ctx.callbackQuery.data === 'refresh_user_progress') {
+    await ctx.answerCbQuery('Progress updated! 🔄');
+    return ctx.editMessageText(progressText, {
+      parse_mode: 'HTML',
+      ...keyboard
+    }).catch(() => {});
+  }
+
+  await ctx.answerCbQuery();
   return ctx.reply(progressText, {
     parse_mode: 'HTML',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('🔄 Refresh Progress', 'my_progress')]
-    ])
+    ...keyboard
   });
 });
 
@@ -620,11 +634,12 @@ bot.on('chat_member', async (ctx) => {
 
             await ctx.telegram.sendMessage(ADMIN_ID, adminVipAlert, { parse_mode: 'HTML' }).catch(() => {});
 
+            // Clickable VIP link without preview box
             const vipMsg = 
               `👑 <b>Congratulations!</b>\n\n` +
               `Target completed! <code>${target} / ${target}</code>\n\n` +
               `🔗 <b>Your VIP Link:</b>\n` +
-              `<code>${vipLinkObj.invite_link}</code>\n\n` +
+              `${vipLinkObj.invite_link}\n\n` +
               `⚠️ <i>Note: Single-use link. Do not share!</i>`;
 
             await ctx.telegram.sendMessage(inviterId, vipMsg, {
