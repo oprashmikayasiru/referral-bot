@@ -135,7 +135,7 @@ bot.action('get_invite_link', async (ctx) => {
   const msg = 
     `🔗 <b>Your Personal Invite Link:</b>\n` +
     `${inviteLink}\n\n` +
-    `📊 <b>Progress:</b> <code>${currentCount} / ${target}</code>`;
+    `📊 <b>Progress:</b> <b>${currentCount}/${target}</b>`;
 
   return ctx.reply(msg, {
     parse_mode: 'HTML',
