@@ -135,7 +135,7 @@ bot.action('get_invite_link', async (ctx) => {
   const msg = 
     `🔗 <b>Your Personal Invite Link:</b>\n` +
     `${inviteLink}\n\n` +
-    `📊 <b>Progress:</b> <b>${currentCount}/${target}</b>`;
+    `📊 <b>Progress:</b> <b>${currentCount} / ${target}</b>`;
 
   return ctx.reply(msg, {
     parse_mode: 'HTML',
@@ -217,8 +217,8 @@ bot.action(['my_progress', 'refresh_user_progress'], async (ctx) => {
 
   const progressText = 
     `📊 <b>Your Referral Progress</b>\n\n` +
-    `• <b>Completed:</b> <code>${currentCount} / ${target}</code>\n` +
-    `• <b>Remaining:</b> <code>${remaining}</code> more needed\n\n` +
+    `• <b>Completed:</b> ${currentCount} / ${target}\n` +
+    `• <b>Remaining:</b> ${remaining} more needed\n\n` +
     `⚠️ මිතුරන් Main Channel එකට Join වී, වීඩියෝ Unlock කළ විට පමණක් Referral count වේ.`;
 
   const keyboard = Markup.inlineKeyboard([
@@ -614,7 +614,7 @@ bot.on('chat_member', async (ctx) => {
       // 🔔 Admin Alert: New Verified Referral
       const adminReferralAlert = 
         `🔔 <b>New Verified Referral!</b>\n\n` +
-        `👤 <b>Inviter:</b> ${inviterName} (<code>${currentCount} / ${target}</code>)\n` +
+        `👤 <b>Inviter:</b> ${inviterName} (${currentCount} / ${target})\n` +
         `➕ <b>Joined:</b> ${joinedName}`;
 
       await ctx.telegram.sendMessage(ADMIN_ID, adminReferralAlert, { parse_mode: 'HTML' }).catch(() => {});
@@ -637,14 +637,14 @@ bot.on('chat_member', async (ctx) => {
             const adminVipAlert = 
               `👑 <b>VIP Claimed!</b>\n\n` +
               `👤 <b>User:</b> ${inviterName} (${inviterUsername})\n` +
-              `🎯 <b>Completed:</b> <code>${target} / ${target}</code>`;
+              `🎯 <b>Completed:</b> ${target} / ${target}`;
 
             await ctx.telegram.sendMessage(ADMIN_ID, adminVipAlert, { parse_mode: 'HTML' }).catch(() => {});
 
             // Clickable VIP link without preview box
             const vipMsg = 
               `👑 <b>Congratulations!</b>\n\n` +
-              `Target completed! <code>${target} / ${target}</code>\n\n` +
+              `Target completed! ${target} / ${target}\n\n` +
               `🔗 <b>Your VIP Link:</b>\n` +
               `${vipLinkObj.invite_link}\n\n` +
               `⚠️ <i>Note: Single-use link. Do not share!</i>`;
