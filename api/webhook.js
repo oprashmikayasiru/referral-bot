@@ -168,8 +168,8 @@ bot.action('gen_invite_msg', async (ctx) => {
 
   // Clickable link format without preview
   const caption = 
-    `🔥 <b>Hot Lanka Exclusive Videos බලන්න!</b>\n` +
-    `👇 Tap here to Join 👇\n\n` +
+    `🔥 <b>Hot Lanka Exclusive !</b>\n` +
+    `Tap here to Join 👇\n\n` +
     `🔗 ${inviter.invite_link}`;
 
   if (config.bannerFileId) {
@@ -212,7 +212,7 @@ bot.action(['my_progress', 'refresh_user_progress'], async (ctx) => {
     `📊 <b>Your Referral Progress</b>\n\n` +
     `• <b>Completed:</b> <code>${currentCount} / ${target}</code>\n` +
     `• <b>Remaining:</b> <code>${remaining}</code> more needed\n\n` +
-    `⚠️ <i>මිතුරන් Main Channel එකට Join වී, වීඩියෝවක් Unlock කළ විට පමණක් Referral count වේ.</i>`;
+    `⚠️ මිතුරන් Main Channel එකට Join වී, වීඩියෝ Unlock කළ විට පමණක් Referral count වේ.`;
 
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback('🔄 Refresh Progress', 'refresh_user_progress')]
@@ -245,14 +245,14 @@ async function renderAdminPanel(ctx, edit = false) {
   ]);
 
   const statusTag = config.signupsAllowed ? '🟢 <code>ACTIVE</code>' : '🔴 <code>PAUSED</code>';
-  const toggleBtnText = config.signupsAllowed ? '🟢 New Signups: ON' : '🔴 New Signups: OFF';
+  const toggleBtnText = config.signupsAllowed ? '🟢 Signups: ON' : '🔴 Signups: OFF';
 
   const panelText = 
     `⚙️ <b>Admin Dashboard</b>\n\n` +
     `👥 <b>Inviters:</b> <code>${totalInviters}</code> | <b>Pending:</b> <code>${pendingCount}</code>\n` +
     `✅ <b>Verified:</b> <code>${verifiedCount}</code> | <b>VIP Given:</b> <code>${vipClaimedCount}</code>\n\n` +
     `🎯 <b>Target:</b> <code>${config.target}</code>\n` +
-    `🔘 <b>New Signups Status:</b> ${statusTag}`;
+    `🔘 <b>Status:</b> ${statusTag}`;
 
   const keyboard = Markup.inlineKeyboard([
     [
@@ -411,7 +411,7 @@ bot.action('open_target_menu', async (ctx) => {
 
   const keyboard = Markup.inlineKeyboard([
     [
-      Markup.button.callback('1 (Test)', 'set_target_1'),
+      Markup.button.callback('1', 'set_target_1'),
       Markup.button.callback('5', 'set_target_5')
     ],
     [
