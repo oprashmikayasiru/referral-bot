@@ -82,7 +82,7 @@ bot.action('get_invite_link', async (ctx) => {
   // Check if signups are paused for new users
   if (!inviter && !config.signupsAllowed) {
     const pausedMsg =
-      `⚠️ <b>Referral Program Temporarily Paused!</b>\n\n` +
+      `⚠️ <b>Referral Program Temporarily Paused!</b>\n` +
       `දැනට Referral Program එක තාවකාලිකව නවතා ඇත.\n\n` +
       `💬 Contact Admin: @LankaAdmin_bot`;
     return ctx.reply(pausedMsg, { parse_mode: 'HTML' });
