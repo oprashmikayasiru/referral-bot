@@ -9,7 +9,6 @@ const BACKUP_CHANNEL_ID = String(process.env.BACKUP_CHANNEL_ID || '-100430630020
 const VIP_CHANNEL_ID = String(process.env.VIP_CHANNEL_ID || '-1004316350899').trim();
 
 let cachedDb = null;
-let commandsRegistered = false;
 
 async function getDb() {
   if (cachedDb) return cachedDb;
@@ -25,44 +24,30 @@ async function getDb() {
   return cachedDb;
 }
 
-// In-memory cache for fast target lookup
-let cachedTarget = 5;
-let targetLastFetched = 0;
+// In-memory cache for fast config lookups
+let cachedConfig = {
+  target: 7,
+  signupsAllowed: true,
+  bannerFileId: null
+};
+let configLastFetched = 0;
 
-async function getTarget(db) {
+async function getConfig(db) {
   const now = Date.now();
-  if (now - targetLastFetched < 30000) {
-    return cachedTarget;
+  if (now - configLastFetched < 30000) {
+    return cachedConfig;
   }
   const s = await db.collection('settings').findOne({ _id: 'config' });
-  if (s && s.target_referrals) {
-    cachedTarget = s.target_referrals;
+  if (s) {
+    cachedConfig.target = s.target_referrals !== undefined ? s.target_referrals : 7;
+    cachedConfig.signupsAllowed = s.new_signups_allowed !== undefined ? s.new_signups_allowed : true;
+    cachedConfig.bannerFileId = s.banner_file_id || null;
   }
-  targetLastFetched = now;
-  return cachedTarget;
+  configLastFetched = now;
+  return cachedConfig;
 }
 
 const bot = new Telegraf(BOT_TOKEN);
-
-async function ensureCommandsRegistered() {
-  if (commandsRegistered) return;
-  try {
-    await bot.telegram.setMyCommands([
-      { command: 'start', description: 'Start Bot & Get Link' }
-    ], { scope: { type: 'default' } });
-
-    await bot.telegram.setMyCommands([
-      { command: 'start', description: 'Start Bot' },
-      { command: 'admin', description: 'Admin Panel' },
-      { command: 'reset', description: 'Reset Test Account' },
-      { command: 'resetme', description: 'Reset Inviter Status' }
-    ], { scope: { type: 'chat', chat_id: ADMIN_ID } });
-
-    commandsRegistered = true;
-  } catch (err) {
-    console.error('Error setting bot commands:', err);
-  }
-}
 
 // User /start Command
 bot.start(async (ctx) => {
@@ -89,10 +74,19 @@ bot.action('get_invite_link', async (ctx) => {
   await ctx.answerCbQuery('Processing...');
 
   const db = await getDb();
-  const [inviter, target] = await Promise.all([
+  const [inviter, config] = await Promise.all([
     db.collection('inviters').findOne({ _id: userId }),
-    getTarget(db)
+    getConfig(db)
   ]);
+
+  // Check if signups are paused for new users
+  if (!inviter && !config.signupsAllowed) {
+    const pausedMsg =
+      `⚠️ <b>Referral Program Temporarily Paused!</b>\n\n` +
+      `දැනට Referral Program එක තාවකාලිකව නවතා ඇත.\n\n` +
+      `💬 Contact Admin: @LankaAdmin_bot`;
+    return ctx.reply(pausedMsg, { parse_mode: 'HTML' });
+  }
 
   if (inviter && inviter.vip_claimed) {
     return ctx.reply(
@@ -135,113 +129,270 @@ bot.action('get_invite_link', async (ctx) => {
   }
 
   const currentCount = inviter ? (inviter.referral_count || 0) : 0;
+  const target = config.target;
 
   const msg = 
     `🔗 <b>Your Personal Invite Link:</b>\n` +
-    `${inviteLink}\n\n` +
-    `📊 <b>Your Progress:</b> <code>${currentCount} / ${target}</code> Completed\n\n` +
-    `🎁 <b>Reward:</b> VIP Channel Access Link`;
+    `<code>${inviteLink}</code>\n\n` +
+    `📊 <b>Progress:</b> <code>${currentCount} / ${target}</code>`;
 
   return ctx.reply(msg, {
     parse_mode: 'HTML',
     link_preview_options: { is_disabled: true },
     disable_web_page_preview: true,
     ...Markup.inlineKeyboard([
-      [Markup.button.callback('📝 Generate Invite Message', 'gen_invite_msg')]
+      [Markup.button.callback('📝 Generate Invite Message', 'gen_invite_msg')],
+      [Markup.button.callback('📊 My Progress', 'my_progress')]
     ])
   });
 });
 
-// Button: Generate Ready-to-Forward Invite Message
+// Button: Generate Invite Message
 bot.action('gen_invite_msg', async (ctx) => {
   if (!ctx.from) return ctx.answerCbQuery();
   const userId = ctx.from.id;
   await ctx.answerCbQuery();
 
   const db = await getDb();
-  const inviter = await db.collection('inviters').findOne({ _id: userId });
+  const [inviter, config] = await Promise.all([
+    db.collection('inviters').findOne({ _id: userId }),
+    getConfig(db)
+  ]);
 
   if (!inviter || !inviter.invite_link) {
-    return ctx.reply("⚠️ කරුණාකර මුලින් 'Get Invite Link' ලබාගන්න.");
+    return ctx.reply("⚠️ Please click '🔗 Get Invite Link' first.");
   }
 
-  const forwardMsg = 
-    `🔥 Hot Lanka Exclusive Videos බලන්න!\n` +
-    `Join වෙන්න පහත ලින්ක් එක ක්ලික් කරන්න 👇\n\n` +
-    `${inviter.invite_link}`;
+  const caption = 
+    `🔥 <b>Hot Lanka Exclusive Videos බලන්න!</b>\n` +
+    `👇 Tap here to Join 👇\n\n` +
+    `🔗 ${inviter.invite_link}`;
 
-  return ctx.reply(forwardMsg, {
+  if (config.bannerFileId) {
+    return ctx.replyWithPhoto(config.bannerFileId, {
+      caption: caption,
+      parse_mode: 'HTML'
+    }).catch(async (err) => {
+      console.error('Failed to send photo, falling back to text:', err);
+      return ctx.reply(caption, {
+        parse_mode: 'HTML',
+        link_preview_options: { is_disabled: true },
+        disable_web_page_preview: true
+      });
+    });
+  }
+
+  return ctx.reply(caption, {
+    parse_mode: 'HTML',
     link_preview_options: { is_disabled: true },
     disable_web_page_preview: true
   });
 });
 
-// Admin Panel Command
-bot.command('admin', async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
-  const db = await getDb();
+// Button: My Progress
+bot.action('my_progress', async (ctx) => {
+  if (!ctx.from) return ctx.answerCbQuery();
+  const userId = ctx.from.id;
+  await ctx.answerCbQuery();
 
-  const [totalInviters, pendingCount, verifiedCount, vipClaimedCount, target] = await Promise.all([
+  const db = await getDb();
+  const [inviter, config] = await Promise.all([
+    db.collection('inviters').findOne({ _id: userId }),
+    getConfig(db)
+  ]);
+
+  const currentCount = inviter ? (inviter.referral_count || 0) : 0;
+  const target = config.target;
+  const remaining = Math.max(0, target - currentCount);
+
+  const progressText = 
+    `📊 <b>Your Referral Progress</b>\n\n` +
+    `• <b>Completed:</b> <code>${currentCount} / ${target}</code>\n` +
+    `• <b>Remaining:</b> <code>${remaining}</code> more needed\n\n` +
+    `⚠️ <i>මිතුරන් Main Channel එකට Join වී, වීඩියෝවක් Unlock කළ විට පමණක් Referral count වේ.</i>`;
+
+  return ctx.reply(progressText, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('🔄 Refresh Progress', 'my_progress')]
+    ])
+  });
+});
+
+// Admin Panel Helper
+async function renderAdminPanel(ctx, edit = false) {
+  const db = await getDb();
+  const [totalInviters, pendingCount, verifiedCount, vipClaimedCount, config] = await Promise.all([
     db.collection('inviters').estimatedDocumentCount(),
     db.collection('invitees').countDocuments({ is_counted: false }),
     db.collection('invitees').countDocuments({ is_counted: true }),
     db.collection('inviters').countDocuments({ vip_claimed: true }),
-    getTarget(db)
+    getConfig(db)
   ]);
+
+  const statusTag = config.signupsAllowed ? '🟢 <code>ACTIVE</code>' : '🔴 <code>PAUSED</code>';
+  const toggleBtnText = config.signupsAllowed ? '🟢 New Signups: ON' : '🔴 New Signups: OFF';
 
   const panelText = 
     `⚙️ <b>Admin Dashboard</b>\n\n` +
-    `👥 <b>Total Inviters:</b> <code>${totalInviters}</code>\n` +
-    `⏳ <b>Pending Friends:</b> <code>${pendingCount}</code>\n` +
-    `✅ <b>Verified Referrals:</b> <code>${verifiedCount}</code>\n` +
-    `👑 <b>VIP Rewards Given:</b> <code>${vipClaimedCount}</code>\n\n` +
-    `🎯 <b>Current Target:</b> <code>${target}</code> Referrals`;
+    `👥 <b>Inviters:</b> <code>${totalInviters}</code> | <b>Pending:</b> <code>${pendingCount}</code>\n` +
+    `✅ <b>Verified:</b> <code>${verifiedCount}</code> | <b>VIP Given:</b> <code>${vipClaimedCount}</code>\n\n` +
+    `🎯 <b>Target:</b> <code>${config.target}</code>\n` +
+    `🔘 <b>New Signups Status:</b> ${statusTag}`;
 
   const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('🎯 Change Target', 'open_target_menu')],
-    [Markup.button.callback('🔄 Refresh', 'refresh_admin_panel')]
+    [
+      Markup.button.callback('🎯 Change Target', 'open_target_menu'),
+      Markup.button.callback(toggleBtnText, 'toggle_signups')
+    ],
+    [
+      Markup.button.callback('🖼 Set Banner', 'prompt_banner_upload'),
+      Markup.button.callback('🔄 Refresh', 'refresh_admin_panel')
+    ]
   ]);
 
+  if (edit) {
+    return ctx.editMessageText(panelText, { parse_mode: 'HTML', ...keyboard });
+  }
   return ctx.reply(panelText, { parse_mode: 'HTML', ...keyboard });
+}
+
+// Admin Panel Command
+bot.command('admin', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
+  return renderAdminPanel(ctx, false);
 });
 
 bot.action('refresh_admin_panel', async (ctx) => {
   if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
   await ctx.answerCbQuery('Refreshing...');
-  const db = await getDb();
-
-  const [totalInviters, pendingCount, verifiedCount, vipClaimedCount, target] = await Promise.all([
-    db.collection('inviters').estimatedDocumentCount(),
-    db.collection('invitees').countDocuments({ is_counted: false }),
-    db.collection('invitees').countDocuments({ is_counted: true }),
-    db.collection('inviters').countDocuments({ vip_claimed: true }),
-    getTarget(db)
-  ]);
-
-  const panelText = 
-    `⚙️ <b>Admin Dashboard</b>\n\n` +
-    `👥 <b>Total Inviters:</b> <code>${totalInviters}</code>\n` +
-    `⏳ <b>Pending Friends:</b> <code>${pendingCount}</code>\n` +
-    `✅ <b>Verified Referrals:</b> <code>${verifiedCount}</code>\n` +
-    `👑 <b>VIP Rewards Given:</b> <code>${vipClaimedCount}</code>\n\n` +
-    `🎯 <b>Current Target:</b> <code>${target}</code> Referrals`;
-
-  const keyboard = Markup.inlineKeyboard([
-    [Markup.button.callback('🎯 Change Target', 'open_target_menu')],
-    [Markup.button.callback('🔄 Refresh', 'refresh_admin_panel')]
-  ]);
-
-  return ctx.editMessageText(panelText, { parse_mode: 'HTML', ...keyboard });
+  return renderAdminPanel(ctx, true);
 });
 
+// Toggle New Signups (ON / OFF)
+bot.action('toggle_signups', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  const db = await getDb();
+  const config = await getConfig(db);
+  const newStatus = !config.signupsAllowed;
+
+  cachedConfig.signupsAllowed = newStatus;
+  configLastFetched = Date.now();
+
+  await db.collection('settings').updateOne(
+    { _id: 'config' },
+    { $set: { new_signups_allowed: newStatus } },
+    { upsert: true }
+  );
+
+  await ctx.answerCbQuery(`Signups ${newStatus ? 'Activated' : 'Paused'}!`);
+  return renderAdminPanel(ctx, true);
+});
+
+// Set Banner Image Flow
+bot.action('prompt_banner_upload', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  await ctx.answerCbQuery();
+
+  const db = await getDb();
+  await db.collection('settings').updateOne(
+    { _id: 'admin_state' },
+    { $set: { awaiting_banner: true, prompt_msg_id: ctx.callbackQuery.message.message_id } },
+    { upsert: true }
+  );
+
+  const promptText = 
+    `🖼 <b>Send New Banner Image</b>\n\n` +
+    `Send the photo to this chat now.`;
+
+  return ctx.editMessageText(promptText, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('⬅️ Cancel', 'cancel_banner_upload')]
+    ])
+  });
+});
+
+bot.action('cancel_banner_upload', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  const db = await getDb();
+  await db.collection('settings').updateOne(
+    { _id: 'admin_state' },
+    { $set: { awaiting_banner: false } }
+  );
+  await ctx.answerCbQuery('Cancelled');
+  return renderAdminPanel(ctx, true);
+});
+
+// Admin Photo Receiver
+bot.on('photo', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
+  const db = await getDb();
+  const state = await db.collection('settings').findOne({ _id: 'admin_state' });
+
+  if (state && state.awaiting_banner) {
+    const photos = ctx.message.photo;
+    const bestPhoto = photos[photos.length - 1];
+    const fileId = bestPhoto.file_id;
+
+    cachedConfig.bannerFileId = fileId;
+    configLastFetched = Date.now();
+
+    await Promise.all([
+      db.collection('settings').updateOne(
+        { _id: 'config' },
+        { $set: { banner_file_id: fileId } },
+        { upsert: true }
+      ),
+      db.collection('settings').updateOne(
+        { _id: 'admin_state' },
+        { $set: { awaiting_banner: false } }
+      ),
+      ctx.deleteMessage(ctx.message.message_id).catch(() => {})
+    ]);
+
+    const successText = `✅ <b>Banner updated successfully!</b>`;
+
+    if (state.prompt_msg_id) {
+      return ctx.telegram.editMessageText(
+        ctx.chat.id,
+        state.prompt_msg_id,
+        null,
+        successText,
+        {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('⬅️ Back to Admin', 'refresh_admin_panel')]
+          ])
+        }
+      ).catch(() => {
+        return ctx.reply(successText, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([
+            [Markup.button.callback('⬅️ Back to Admin', 'refresh_admin_panel')]
+          ])
+        });
+      });
+    }
+
+    return ctx.reply(successText, {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('⬅️ Back to Admin', 'refresh_admin_panel')]
+      ])
+    });
+  }
+});
+
+// Target Selection Menu
 bot.action('open_target_menu', async (ctx) => {
   if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
   const db = await getDb();
-  const target = await getTarget(db);
+  const config = await getConfig(db);
 
   const text = 
     `🎯 <b>Select Referral Target</b>\n\n` +
-    `Current Target: <code>${target}</code>\n` +
+    `Current Target: <code>${config.target}</code>\n` +
     `Choose how many valid referrals are needed for VIP access:`;
 
   const keyboard = Markup.inlineKeyboard([
@@ -265,8 +416,8 @@ bot.action('open_target_menu', async (ctx) => {
 bot.action(/^set_target_(\d+)$/, async (ctx) => {
   if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
   const target = parseInt(ctx.match[1]);
-  cachedTarget = target;
-  targetLastFetched = Date.now();
+  cachedConfig.target = target;
+  configLastFetched = Date.now();
 
   const db = await getDb();
   await db.collection('settings').updateOne(
@@ -276,7 +427,7 @@ bot.action(/^set_target_(\d+)$/, async (ctx) => {
   );
 
   await ctx.answerCbQuery(`Target set to ${target}!`);
-  return ctx.reply(`✅ Referral target updated to <code>${target}</code>!`, { parse_mode: 'HTML' });
+  return renderAdminPanel(ctx, true);
 });
 
 // Admin Self-Reset Command
@@ -292,12 +443,10 @@ bot.command('resetme', async (ctx) => {
   return ctx.reply('✅ <b>Your Inviter Profile has been Reset!</b>\n\nReferral count set to 0 and VIP lock removed. You can now test again.', { parse_mode: 'HTML' });
 });
 
-// Safe Reset Command (Default: 8226533559)
+// Safe Reset Command
 bot.command('reset', async (ctx) => {
   if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
   const parts = ctx.message.text.trim().split(/\s+/);
-  
-  // Default to 8226533559 if no ID is specified
   const targetId = parts.length >= 2 ? parseInt(parts[1]) : 8226533559;
 
   if (isNaN(targetId)) {
@@ -412,6 +561,8 @@ bot.on('chat_member', async (ctx) => {
 
     if (newStatus === 'member' && ['left', 'kicked'].includes(oldStatus)) {
       const inviteeId = cm.new_chat_member.user.id;
+      const joinedUser = cm.new_chat_member.user;
+      const joinedName = joinedUser.first_name || 'Member';
       const db = await getDb();
 
       const updateResult = await db.collection('invitees').findOneAndUpdate(
@@ -424,7 +575,8 @@ bot.on('chat_member', async (ctx) => {
       if (!record || !record.inviter_id) return;
 
       const inviterId = record.inviter_id;
-      const target = await getTarget(db);
+      const config = await getConfig(db);
+      const target = config.target;
 
       const inviterUpdate = await db.collection('inviters').findOneAndUpdate(
         { _id: inviterId },
@@ -436,6 +588,15 @@ bot.on('chat_member', async (ctx) => {
       if (!updatedInviter) return;
 
       const currentCount = updatedInviter.referral_count || 0;
+      const inviterName = updatedInviter.first_name || 'Inviter';
+
+      // 🔔 Admin Alert: New Verified Referral
+      const adminReferralAlert = 
+        `🔔 <b>New Verified Referral!</b>\n\n` +
+        `👤 <b>Inviter:</b> ${inviterName} (<code>${currentCount} / ${target}</code>)\n` +
+        `➕ <b>Joined:</b> ${joinedName}`;
+
+      await ctx.telegram.sendMessage(ADMIN_ID, adminReferralAlert, { parse_mode: 'HTML' }).catch(() => {});
 
       if (currentCount >= target && !updatedInviter.vip_claimed) {
         const claimLock = await db.collection('inviters').findOneAndUpdate(
@@ -450,12 +611,21 @@ bot.on('chat_member', async (ctx) => {
               member_limit: 1
             });
 
+            // 👑 Admin Alert: VIP Claimed
+            const inviterUsername = updatedInviter.username ? `@${updatedInviter.username}` : 'No username';
+            const adminVipAlert = 
+              `👑 <b>VIP Claimed!</b>\n\n` +
+              `👤 <b>User:</b> ${inviterName} (${inviterUsername})\n` +
+              `🎯 <b>Completed:</b> <code>${target} / ${target}</code>`;
+
+            await ctx.telegram.sendMessage(ADMIN_ID, adminVipAlert, { parse_mode: 'HTML' }).catch(() => {});
+
             const vipMsg = 
               `👑 <b>Congratulations!</b>\n\n` +
-              `You have successfully reached the target of <code>${target}</code> referrals!\n\n` +
-              `🔗 <b>Your VIP Channel Link:</b>\n` +
-              `${vipLinkObj.invite_link}\n\n` +
-              `⚠️ <i>Note: Do not share it with others!</i>`;
+              `Target completed! <code>${target} / ${target}</code>\n\n` +
+              `🔗 <b>Your VIP Link:</b>\n` +
+              `<code>${vipLinkObj.invite_link}</code>\n\n` +
+              `⚠️ <i>Note: Single-use link. Do not share!</i>`;
 
             await ctx.telegram.sendMessage(inviterId, vipMsg, {
               parse_mode: 'HTML',
