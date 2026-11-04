@@ -168,7 +168,7 @@ bot.action('gen_invite_msg', async (ctx) => {
 
   // Clickable link format without preview
   const caption = 
-    `<b>Hot Lanka Exclusive !</b>🔥 \n` +
+    `<b>Hot Lanka Exclusive !</b> 🔥 \n` +
     `<b>Tap here to Join</b> 👇\n` +
     `${inviter.invite_link}`;
 
