@@ -1,553 +1,468 @@
 const { Telegraf, Markup } = require('telegraf');
 const { MongoClient } = require('mongodb');
 
-const BOT_TOKEN = process.env.BOT_TOKEN || '9135987312:AAGkmP4rKSg14A8y1Sc4LpIEynNnDLJTHFw';
-const MONGODB_URI = process.env.MONGODB_URI || 'mongodb+srv://oprashmikayasiru_db_user:AMcK5sVpxXr3R7VT@cluster0.ulukf3s.mongodb.net/vip_referral_bot?retryWrites=true&w=majority';
-const ADMIN_ID = String(process.env.ADMIN_ID || '5411921025').trim();
+const BOT_TOKEN = process.env.BOT_TOKEN || '9219700583:AAGSAXsd3g34KHI0fTYoJzCbfiv2mlLCJ48';
+const MONGODB_URI = process.env.MONGODB_URI;
 const MAIN_CHANNEL_ID = String(process.env.MAIN_CHANNEL_ID || '-1004309315754').trim();
 const BACKUP_CHANNEL_ID = String(process.env.BACKUP_CHANNEL_ID || '-1004306300202').trim();
 const VIP_CHANNEL_ID = String(process.env.VIP_CHANNEL_ID || '-1004316350899').trim();
+const ADMIN_ID = String(process.env.ADMIN_ID || '5411921025').trim();
+const VERCEL_URL = 'https://event-bot-sigma.vercel.app';
 
-let cachedDb = null;
-
+let cachedClient = null;
 async function getDb() {
-  if (cachedDb) return cachedDb;
-  const client = new MongoClient(MONGODB_URI, {
-    maxPoolSize: 10,
-    minPoolSize: 1,
-    maxIdleTimeMS: 60000,
-    connectTimeoutMS: 5000,
-    socketTimeoutMS: 10000
-  });
-  await client.connect();
-  cachedDb = client.db('vip_referral_bot');
-  return cachedDb;
+  if (!cachedClient) {
+    cachedClient = new MongoClient(MONGODB_URI, {
+      maxPoolSize: 10,
+      minPoolSize: 1,
+      connectTimeoutMS: 5000,
+      socketTimeoutMS: 10000,
+      serverSelectionTimeoutMS: 5000
+    });
+    await cachedClient.connect();
+  }
+  return cachedClient.db('vip_event_bot');
 }
 
-// In-memory cache for fast config lookups
-let cachedConfig = {
-  target: 7,
-  signupsAllowed: true,
-  bannerFileId: null
-};
+// Config Cache Helper
+let cachedConfig = null;
 let configLastFetched = 0;
 
-async function getConfig(db) {
+async function getEventConfig(db) {
   const now = Date.now();
-  if (now - configLastFetched < 30000) {
+  if (cachedConfig && (now - configLastFetched < 15000)) {
     return cachedConfig;
   }
-  const s = await db.collection('settings').findOne({ _id: 'config' });
-  if (s) {
-    cachedConfig.target = s.target_referrals !== undefined ? s.target_referrals : 7;
-    cachedConfig.signupsAllowed = s.new_signups_allowed !== undefined ? s.new_signups_allowed : true;
-    cachedConfig.bannerFileId = s.banner_file_id || null;
+  const col = db.collection('event_config');
+  let cfg = await col.findOne({ _id: 'main_event' });
+  if (!cfg) {
+    cfg = {
+      _id: 'main_event',
+      reg_enabled: true,
+      referrals_enabled: true,
+      event_end_date: null,
+      target_points: 200,
+      max_winners: 5,
+      claimed_winners: 0,
+      banner_file_id: null
+    };
+    await col.insertOne(cfg);
   }
+  cachedConfig = cfg;
   configLastFetched = now;
-  return cachedConfig;
+  return cfg;
+}
+
+function maskId(id) {
+  const str = String(id);
+  if (str.length <= 4) return '***';
+  return `${str.slice(0, 3)}***${str.slice(-3)}`;
+}
+
+function getSLDateOnlyString(futureTimestamp) {
+  const slOffset = 5.5 * 60 * 60 * 1000;
+  const slDate = new Date(futureTimestamp + slOffset);
+  const y = slDate.getUTCFullYear();
+  const m = String(slDate.getUTCMonth() + 1).padStart(2, '0');
+  const d = String(slDate.getUTCDate()).padStart(2, '0');
+  return `${y}-${m}-${d}`;
 }
 
 const bot = new Telegraf(BOT_TOKEN);
 
-// User /start Command
-bot.start(async (ctx) => {
-  const welcomeText = 
-    `👑 <b>VIP REWARDS PROGRAM</b> 👑\n\n` +
-    `යාලුවන්ට Share කරලා <b>VIP Channel Access</b> නොමිලේම දිනාගන්න! 🎁\n\n` +
-    `<b>Steps:</b>\n` +
-    `🔹 පහත Button එකෙන් ඔබේ Link එක ගන්න\n` +
-    `🔹 යාලුවන්ට යවන්න (Join Main Channel + Video Unlock)\n` +
-    `🔹 Target එක පිරුණු ගමන් Instant VIP Link !`;
+// Auto-Healing Webhook & Scoped Commands Setup
+let systemInitialized = false;
+async function initSystem() {
+  if (systemInitialized) return;
+  try {
+    const info = await bot.telegram.getWebhookInfo();
+    if (!info.url || info.url !== VERCEL_URL) {
+      await bot.telegram.setWebhook(VERCEL_URL, {
+        allowed_updates: ['message', 'callback_query', 'chat_join_request', 'chat_member']
+      });
+    }
 
-  return ctx.reply(welcomeText, {
-    parse_mode: 'HTML',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('🔗 Get Invite Link', 'get_invite_link')]
-    ])
-  });
+    await bot.telegram.setMyCommands(
+      [
+        { command: 'start', description: 'Start bot' },
+        { command: 'leaderboard', description: 'View leaderboard' }
+      ],
+      { scope: { type: 'default' } }
+    );
+
+    if (ADMIN_ID) {
+      await bot.telegram.setMyCommands(
+        [
+          { command: 'start', description: 'Start bot' },
+          { command: 'leaderboard', description: 'View leaderboard' },
+          { command: 'admin', description: 'Event Control Panel' }
+        ],
+        { scope: { type: 'chat', chat_id: Number(ADMIN_ID) } }
+      );
+    }
+    systemInitialized = true;
+  } catch (e) {
+    console.error('Init error:', e.message);
+  }
+}
+
+// --- Leaderboard View Logic ---
+
+async function renderLeaderboardText(ctx) {
+  try {
+    const db = await getDb();
+    const cfg = await getEventConfig(db);
+    const userId = ctx.from ? ctx.from.id : null;
+
+    const topUsers = await db.collection('event_users')
+      .find({})
+      .sort({ points: -1, registered_at: 1 })
+      .limit(5)
+      .toArray();
+
+    let text = `🏆 <b>VIP RACE (TOP 5)</b>\n\n`;
+    const badges = ['🥇', '🥈', '🥉', '❹', '❺'];
+
+    for (let i = 0; i < 5; i++) {
+      const u = topUsers[i];
+      if (u) {
+        text += `${badges[i]} ${maskId(u._id)} : ${u.points} XP\n`;
+      } else {
+        text += `${badges[i]} --- : 0 XP\n`;
+      }
+    }
+
+    text += `━━━━━━━━━━━━━━━\n`;
+    text += `🎁 Claimed: <b>${cfg.claimed_winners} / ${cfg.max_winners}</b>\n`;
+
+    if (userId) {
+      const currentUser = await db.collection('event_users').findOne({ _id: userId });
+      if (currentUser) {
+        const higherCount = await db.collection('event_users').countDocuments({ points: { $gt: currentUser.points } });
+        text += `👤 You: ${maskId(userId)} | Rank #${higherCount + 1} (${currentUser.points} XP)\n`;
+      } else {
+        text += `👤 You: <i>Not registered yet</i>\n`;
+      }
+    }
+
+    if (cfg.event_end_date) {
+      text += `⏳ Ends: ${cfg.event_end_date}`;
+    }
+
+    return text;
+  } catch (e) {
+    console.error('Leaderboard error:', e);
+    return '❌ Could not load leaderboard.';
+  }
+}
+
+const leaderboardKeyboard = Markup.inlineKeyboard([
+  [Markup.button.callback('🔄 Refresh', 'refresh_leaderboard')]
+]);
+
+// --- User Flow Handlers ---
+
+bot.start(async (ctx) => {
+  if (!ctx.from) return;
+  const payload = ctx.startPayload;
+  const userId = ctx.from.id;
+  const fName = ctx.from.first_name || 'User';
+
+  try {
+    const db = await getDb();
+    const cfg = await getEventConfig(db);
+
+    if (payload === 'leaderboard') {
+      const text = await renderLeaderboardText(ctx);
+      return ctx.reply(text, { parse_mode: 'HTML', ...leaderboardKeyboard });
+    }
+
+    const existingUser = await db.collection('event_users').findOne({ _id: userId });
+
+    if (!existingUser) {
+      const welcomeNew = `👋 Welcome <b>${fName}</b> to <b>Hot Lanka Event Bot</b>!\n\n` +
+        `🎁 <b>VIP Giveaway Challenge!</b>\n` +
+        `Videos unlock කර හෝ යහළුවන් Invite කර XP ලබාගන්න. Target එක සම්පූර්ණ කරන <b>මුල් ${cfg.max_winners} දෙනාට Hot Lanka VIP එක Free</b> හිමිවේ!\n\n` +
+        `⚡️ <b>Rates:</b>\n` +
+        `• 1 Video Unlock = <b>1 XP</b>\n` +
+        `• 1 Verified Referral = <b>20 XP</b>\n` +
+        `🎯 <b>Target:</b> <b>${cfg.target_points} XP</b>\n\n` +
+        `Challenge එකට එකතු වෙන්න පහත <b>Join Event</b> බටන් එක ක්ලික් කරන්න:`;
+
+      return ctx.reply(welcomeNew, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🚀 Join Event', 'action_join_event')]
+        ])
+      });
+    }
+
+    const welcomeReturning = `👋 Welcome back <b>${fName}</b> to <b>Hot Lanka Event Bot</b>!\n\n` +
+      `⚡️ <b>Rates:</b> 1 Video = 1 XP | 1 Referral = 20 XP\n` +
+      `🎯 <b>Target:</b> <b>${cfg.target_points} XP</b>`;
+
+    return ctx.reply(welcomeReturning, {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🔗 Get Invite Link', 'get_invite_link')],
+        [Markup.button.callback('🏆 Leader Board', 'view_leaderboard')]
+      ])
+    });
+  } catch (err) {
+    console.error('Start error:', err);
+  }
+});
+
+// Join Event Button Action
+bot.action('action_join_event', async (ctx) => {
+  if (!ctx.from) return;
+  const userId = ctx.from.id;
+
+  try {
+    const db = await getDb();
+    const cfg = await getEventConfig(db);
+
+    if (!cfg.reg_enabled) {
+      const regClosedMsg = `⚠️ <b>Registration is currently closed!</b>\n` +
+        `දැනට Referral Program එක තාවකාලිකව නවතා ඇත.\n` +
+        `💬 Contact Admin: <a href="https://t.me/LankaAdmin_bot">Hot Lanka Admin</a>`;
+      await ctx.answerCbQuery('Registration Closed', { show_alert: true });
+      return ctx.reply(regClosedMsg, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+    }
+
+    const existingUser = await db.collection('event_users').findOne({ _id: userId });
+    if (existingUser) {
+      await ctx.answerCbQuery();
+      return ctx.reply('ඔබ දැනටමත් ලියාපදිංචි වී ඇත!', {
+        ...Markup.inlineKeyboard([
+          [Markup.button.callback('🔗 Get Invite Link', 'get_invite_link')],
+          [Markup.button.callback('🏆 Leader Board', 'view_leaderboard')]
+        ])
+      });
+    }
+
+    await db.collection('event_users').updateOne(
+      { _id: userId },
+      { 
+        $set: {
+          first_name: ctx.from.first_name || 'User',
+          username: ctx.from.username || null
+        },
+        $setOnInsert: { 
+          registered_at: new Date(),
+          points: 0,
+          claimed_files: [],
+          referral_count: 0,
+          vip_claimed: false
+        }
+      },
+      { upsert: true }
+    );
+
+    await ctx.answerCbQuery('සාර්ථකව ලියාපදිංචි විය!');
+
+    const msg = `🎉 <b>VIP Challenge Registered!</b>\n\n` +
+      `ඔබ සාර්ථකව Event එකට ලියාපදිංචි විය! දැන් videos unlock කර හෝ මිතුරන් එකතු කර <b>XP</b> වැඩි කරගන්න.\n\n` +
+      `🎯 <b>Target:</b> <b>${cfg.target_points} XP</b>`;
+
+    return ctx.reply(msg, {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🔗 Get Invite Link', 'get_invite_link')],
+        [Markup.button.callback('🏆 Leader Board', 'view_leaderboard')]
+      ])
+    });
+  } catch (e) {
+    console.error('Join error:', e);
+  }
 });
 
 // Button: Get Invite Link
 bot.action('get_invite_link', async (ctx) => {
-  if (!ctx.from) return ctx.answerCbQuery();
+  if (!ctx.from) return;
   const userId = ctx.from.id;
-  await ctx.answerCbQuery('Processing...');
 
-  const db = await getDb();
-  const [inviter, config] = await Promise.all([
-    db.collection('inviters').findOne({ _id: userId }),
-    getConfig(db)
-  ]);
+  try {
+    const db = await getDb();
+    const cfg = await getEventConfig(db);
 
-  // Check if signups are paused for new users
-  if (!inviter && !config.signupsAllowed) {
-    const pausedMsg =
-      `⚠️ <b>Referral Program Temporarily Paused!</b>\n` +
-      `දැනට Referral Program එක තාවකාලිකව නවතා ඇත.\n\n` +
-      `💬 Contact Admin: @LankaAdmin_bot`;
-    return ctx.reply(pausedMsg, { parse_mode: 'HTML' });
-  }
+    if (!cfg.referrals_enabled) {
+      const pausedMsg = `⚠️ <b>Referral Program Temporarily Paused!</b>\n` +
+        `දැනට Referral Program එක තාවකාලිකව නවතා ඇත.\n` +
+        `💬 Contact Admin: <a href="https://t.me/LankaAdmin_bot">Hot Lanka Admin</a>`;
+      await ctx.answerCbQuery('Referrals Paused', { show_alert: true });
+      return ctx.reply(pausedMsg, { parse_mode: 'HTML', link_preview_options: { is_disabled: true } });
+    }
 
-  if (inviter && inviter.vip_claimed) {
-    return ctx.reply(
-      "🚫 <b>Access Denied!</b>\n\nYou have already claimed your VIP reward once.",
-      { parse_mode: 'HTML' }
-    );
-  }
+    await ctx.answerCbQuery('Generating Link...');
+    let user = await db.collection('event_users').findOne({ _id: userId });
 
-  let inviteLink = inviter ? inviter.invite_link : null;
+    if (!user) {
+      await db.collection('event_users').updateOne(
+        { _id: userId },
+        {
+          $set: { first_name: ctx.from.first_name || 'User', username: ctx.from.username || null },
+          $setOnInsert: { registered_at: new Date(), points: 0, claimed_files: [], referral_count: 0, vip_claimed: false }
+        },
+        { upsert: true }
+      );
+      user = await db.collection('event_users').findOne({ _id: userId });
+    }
 
-  if (!inviteLink) {
-    try {
+    if (user.vip_claimed) {
+      return ctx.reply("🚫 <b>Access Denied!</b>\nYou have already claimed your VIP reward.", { parse_mode: 'HTML' });
+    }
+
+    let inviteLink = user.invite_link;
+    if (!inviteLink) {
       const linkObj = await ctx.telegram.createChatInviteLink(MAIN_CHANNEL_ID, {
         name: `ref_${userId}`,
         creates_join_request: true
       });
       inviteLink = linkObj.invite_link;
 
-      await db.collection('inviters').updateOne(
-        { _id: userId },
-        {
-          $set: {
-            invite_link: inviteLink,
-            first_name: ctx.from.first_name || '',
-            username: ctx.from.username || null,
-            updated_at: new Date()
-          },
-          $setOnInsert: {
-            referral_count: 0,
-            vip_claimed: false,
-            created_at: new Date()
-          }
-        },
-        { upsert: true }
-      );
-    } catch (err) {
-      console.error('Invite link generation error:', err);
-      return ctx.reply("❌ Error generating invite link. Please make sure the bot is an Admin in the Main Channel.");
+      await Promise.all([
+        db.collection('event_users').updateOne({ _id: userId }, { $set: { invite_link: inviteLink } }),
+        db.collection('inviters').updateOne(
+          { _id: userId },
+          { $set: { invite_link: inviteLink, first_name: ctx.from.first_name || 'User', username: ctx.from.username || null } },
+          { upsert: true }
+        )
+      ]);
     }
+
+    const currentPts = user.points || 0;
+    const msg = `🔗 <b>Your Personal Invite Link:</b>\n` +
+      `${inviteLink}\n\n` +
+      `📊 <b>Current Points:</b> <b>${currentPts} / ${cfg.target_points} XP</b>\n` +
+      `<i>(1 Verified Referral = +20 XP)</i>`;
+
+    return ctx.reply(msg, {
+      parse_mode: 'HTML',
+      link_preview_options: { is_disabled: true },
+      ...Markup.inlineKeyboard([
+        [
+          Markup.button.callback('📝 Invite Msg', 'gen_invite_msg'),
+          Markup.button.callback('📊 Progress', 'my_progress')
+        ]
+      ])
+    });
+  } catch (err) {
+    console.error('Invite link generation error:', err);
+    return ctx.reply("❌ Error generating invite link. Make sure the Bot is an Admin in the Main Channel.");
   }
-
-  const currentCount = inviter ? (inviter.referral_count || 0) : 0;
-  const target = config.target;
-
-  // Clickable Blue Link (No code tags) + No Web Preview
-  const msg = 
-    `🔗 <b>Your Personal Invite Link:</b>\n` +
-    `${inviteLink}\n\n` +
-    `📊 <b>Progress:</b> <b>${currentCount} / ${target}</b>`;
-
-  return ctx.reply(msg, {
-    parse_mode: 'HTML',
-    link_preview_options: { is_disabled: true },
-    disable_web_page_preview: true,
-    ...Markup.inlineKeyboard([
-      [
-        Markup.button.callback('📝 Invite Msg', 'gen_invite_msg'),
-        Markup.button.callback('📊 Progress', 'my_progress')
-      ]
-    ])
-  });
 });
 
 // Button: Generate Invite Message
 bot.action('gen_invite_msg', async (ctx) => {
-  if (!ctx.from) return ctx.answerCbQuery();
+  if (!ctx.from) return;
   const userId = ctx.from.id;
   await ctx.answerCbQuery();
 
   const db = await getDb();
-  const [inviter, config] = await Promise.all([
-    db.collection('inviters').findOne({ _id: userId }),
-    getConfig(db)
+  const [user, cfg] = await Promise.all([
+    db.collection('event_users').findOne({ _id: userId }),
+    getEventConfig(db)
   ]);
 
-  if (!inviter || !inviter.invite_link) {
+  if (!user || !user.invite_link) {
     return ctx.reply("⚠️ Please click '🔗 Get Invite Link' first.");
   }
 
-  // Clickable link format without preview
-  const caption = 
-    `<b>Hot Lanka Exclusive !</b> 🔥 \n` +
+  const caption = `<b>Hot Lanka Exclusive !</b> 🔥 \n` +
     `<b>Tap here to Join</b> 👇\n` +
-    `${inviter.invite_link}`;
+    `${user.invite_link}`;
 
   const inviteKeyboard = Markup.inlineKeyboard([
-    [Markup.button.url('🔗 Join Hot Lanka', inviter.invite_link)]
+    [Markup.button.url('🔗 Join Hot Lanka', user.invite_link)]
   ]);
 
-  if (config.bannerFileId) {
-    return ctx.replyWithPhoto(config.bannerFileId, {
+  if (cfg.banner_file_id) {
+    return ctx.replyWithPhoto(cfg.banner_file_id, {
       caption: caption,
       parse_mode: 'HTML',
       ...inviteKeyboard
-    }).catch(async (err) => {
-      console.error('Failed to send photo, falling back to text:', err);
-      return ctx.reply(caption, {
-        parse_mode: 'HTML',
-        link_preview_options: { is_disabled: true },
-        disable_web_page_preview: true,
-        ...inviteKeyboard
-      });
+    }).catch(async () => {
+      return ctx.reply(caption, { parse_mode: 'HTML', link_preview_options: { is_disabled: true }, ...inviteKeyboard });
     });
   }
 
   return ctx.reply(caption, {
     parse_mode: 'HTML',
     link_preview_options: { is_disabled: true },
-    disable_web_page_preview: true,
     ...inviteKeyboard
   });
 });
 
-// Button: My Progress (Edits the message in-place on refresh)
+// Button: My Progress
 bot.action(['my_progress', 'refresh_user_progress'], async (ctx) => {
-  if (!ctx.from) return ctx.answerCbQuery();
+  if (!ctx.from) return;
   const userId = ctx.from.id;
 
   const db = await getDb();
-  const [inviter, config] = await Promise.all([
-    db.collection('inviters').findOne({ _id: userId }),
-    getConfig(db)
+  const [user, cfg] = await Promise.all([
+    db.collection('event_users').findOne({ _id: userId }),
+    getEventConfig(db)
   ]);
 
-  const currentCount = inviter ? (inviter.referral_count || 0) : 0;
-  const target = config.target;
-  const remaining = Math.max(0, target - currentCount);
+  const currentPts = user ? (user.points || 0) : 0;
+  const refCount = user ? (user.referral_count || 0) : 0;
+  const remaining = Math.max(0, cfg.target_points - currentPts);
 
-  const progressText = 
-    `📊 <b>Your Referral Progress</b>\n\n` +
-    `• <b>Completed:</b> ${currentCount} / ${target}\n` +
-    `• <b>Remaining:</b> ${remaining} more needed\n\n` +
-    `⚠️ මිතුරන් Main Channel එකට Join වී, වීඩියෝ Unlock කළ විට පමණක් Referral count වේ.`;
+  const progressText = `📊 <b>Your Event Progress</b>\n\n` +
+    `• <b>Completed:</b> <b>${currentPts} / ${cfg.target_points} XP</b>\n` +
+    `• <b>Remaining:</b> <b>${remaining} XP</b> more needed\n` +
+    `• <b>Verified Referrals:</b> <b>${refCount}</b> <i>(+ ${refCount * 20} XP)</i>\n\n` +
+    `⚠️ මිතුරන් Main Channel එකට Join වී, videos unlock කරගත් පසු පමණක් Referral එක verified වේ.`;
 
   const keyboard = Markup.inlineKeyboard([
     [Markup.button.callback('🔄 Refresh Progress', 'refresh_user_progress')]
   ]);
 
   if (ctx.callbackQuery.data === 'refresh_user_progress') {
-    await ctx.answerCbQuery('Progress updated! 🔄');
-    return ctx.editMessageText(progressText, {
-      parse_mode: 'HTML',
-      ...keyboard
-    }).catch(() => {});
+    await ctx.answerCbQuery('Updated!');
+    return ctx.editMessageText(progressText, { parse_mode: 'HTML', ...keyboard }).catch(() => {});
   }
 
   await ctx.answerCbQuery();
-  return ctx.reply(progressText, {
-    parse_mode: 'HTML',
-    ...keyboard
-  });
+  return ctx.reply(progressText, { parse_mode: 'HTML', ...keyboard });
 });
 
-// Admin Panel Helper
-async function renderAdminPanel(ctx, edit = false) {
-  const db = await getDb();
-  const [totalInviters, pendingCount, verifiedCount, vipClaimedCount, config] = await Promise.all([
-    db.collection('inviters').estimatedDocumentCount(),
-    db.collection('invitees').countDocuments({ is_counted: false }),
-    db.collection('invitees').countDocuments({ is_counted: true }),
-    db.collection('inviters').countDocuments({ vip_claimed: true }),
-    getConfig(db)
-  ]);
-
-  const statusTag = config.signupsAllowed ? '🟢 <code>ACTIVE</code>' : '🔴 <code>PAUSED</code>';
-  const toggleBtnText = config.signupsAllowed ? '🟢 Signups: ON' : '🔴 Signups: OFF';
-
-  const panelText = 
-    `⚙️ <b>Admin Dashboard</b>\n\n` +
-    `👥 <b>Inviters:</b> <code>${totalInviters}</code> | <b>Pending:</b> <code>${pendingCount}</code>\n` +
-    `✅ <b>Verified:</b> <code>${verifiedCount}</code> | <b>VIP Given:</b> <code>${vipClaimedCount}</code>\n\n` +
-    `🎯 <b>Target:</b> <code>${config.target}</code>\n` +
-    `🔘 <b>Status:</b> ${statusTag}`;
-
-  const keyboard = Markup.inlineKeyboard([
-    [
-      Markup.button.callback('🎯 Change Target', 'open_target_menu'),
-      Markup.button.callback(toggleBtnText, 'toggle_signups')
-    ],
-    [
-      Markup.button.callback('🖼 Set Banner', 'prompt_banner_upload'),
-      Markup.button.callback('🔄 Refresh', 'refresh_admin_panel')
-    ]
-  ]);
-
-  if (edit) {
-    return ctx.editMessageText(panelText, { parse_mode: 'HTML', ...keyboard });
-  }
-  return ctx.reply(panelText, { parse_mode: 'HTML', ...keyboard });
-}
-
-// Admin Panel Command
-bot.command('admin', async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
-  return renderAdminPanel(ctx, false);
+bot.command('leaderboard', async (ctx) => {
+  const text = await renderLeaderboardText(ctx);
+  return ctx.reply(text, { parse_mode: 'HTML', ...leaderboardKeyboard });
 });
 
-bot.action('refresh_admin_panel', async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
-  await ctx.answerCbQuery('Refreshing...');
-  return renderAdminPanel(ctx, true);
-});
-
-// Toggle New Signups (ON / OFF)
-bot.action('toggle_signups', async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
-  const db = await getDb();
-  const config = await getConfig(db);
-  const newStatus = !config.signupsAllowed;
-
-  cachedConfig.signupsAllowed = newStatus;
-  configLastFetched = Date.now();
-
-  await db.collection('settings').updateOne(
-    { _id: 'config' },
-    { $set: { new_signups_allowed: newStatus } },
-    { upsert: true }
-  );
-
-  await ctx.answerCbQuery(`Signups ${newStatus ? 'Activated' : 'Paused'}!`);
-  return renderAdminPanel(ctx, true);
-});
-
-// Set Banner Image Flow
-bot.action('prompt_banner_upload', async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+bot.action('view_leaderboard', async (ctx) => {
   await ctx.answerCbQuery();
-
-  const db = await getDb();
-  await db.collection('settings').updateOne(
-    { _id: 'admin_state' },
-    { $set: { awaiting_banner: true, prompt_msg_id: ctx.callbackQuery.message.message_id } },
-    { upsert: true }
-  );
-
-  const promptText = 
-    `🖼 <b>Send New Banner Image</b>\n\n` +
-    `Send the photo to this chat now.`;
-
-  return ctx.editMessageText(promptText, {
-    parse_mode: 'HTML',
-    ...Markup.inlineKeyboard([
-      [Markup.button.callback('⬅️ Cancel', 'cancel_banner_upload')]
-    ])
-  });
+  const text = await renderLeaderboardText(ctx);
+  return ctx.reply(text, { parse_mode: 'HTML', ...leaderboardKeyboard });
 });
 
-bot.action('cancel_banner_upload', async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
-  const db = await getDb();
-  await db.collection('settings').updateOne(
-    { _id: 'admin_state' },
-    { $set: { awaiting_banner: false } }
-  );
-  await ctx.answerCbQuery('Cancelled');
-  return renderAdminPanel(ctx, true);
-});
-
-// Admin Photo Receiver
-bot.on('photo', async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
-  const db = await getDb();
-  const state = await db.collection('settings').findOne({ _id: 'admin_state' });
-
-  if (state && state.awaiting_banner) {
-    const photos = ctx.message.photo;
-    const bestPhoto = photos[photos.length - 1];
-    const fileId = bestPhoto.file_id;
-
-    cachedConfig.bannerFileId = fileId;
-    configLastFetched = Date.now();
-
-    await Promise.all([
-      db.collection('settings').updateOne(
-        { _id: 'config' },
-        { $set: { banner_file_id: fileId } },
-        { upsert: true }
-      ),
-      db.collection('settings').updateOne(
-        { _id: 'admin_state' },
-        { $set: { awaiting_banner: false } }
-      ),
-      ctx.deleteMessage(ctx.message.message_id).catch(() => {})
-    ]);
-
-    const successText = `✅ <b>Banner updated successfully!</b>`;
-
-    if (state.prompt_msg_id) {
-      return ctx.telegram.editMessageText(
-        ctx.chat.id,
-        state.prompt_msg_id,
-        null,
-        successText,
-        {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('⬅️ Back to Admin', 'refresh_admin_panel')]
-          ])
-        }
-      ).catch(() => {
-        return ctx.reply(successText, {
-          parse_mode: 'HTML',
-          ...Markup.inlineKeyboard([
-            [Markup.button.callback('⬅️ Back to Admin', 'refresh_admin_panel')]
-          ])
-        });
-      });
-    }
-
-    return ctx.reply(successText, {
-      parse_mode: 'HTML',
-      ...Markup.inlineKeyboard([
-        [Markup.button.callback('⬅️ Back to Admin', 'refresh_admin_panel')]
-      ])
-    });
+bot.action('refresh_leaderboard', async (ctx) => {
+  try {
+    const text = await renderLeaderboardText(ctx);
+    await ctx.editMessageText(text, { parse_mode: 'HTML', ...leaderboardKeyboard });
+    return ctx.answerCbQuery('Updated!');
+  } catch (e) {
+    return ctx.answerCbQuery();
   }
 });
 
-// Target Selection Menu
-bot.action('open_target_menu', async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
-  const db = await getDb();
-  const config = await getConfig(db);
+// --- Referral Webhook Events ---
 
-  const text = 
-    `🎯 <b>Select Referral Target</b>\n\n` +
-    `Current Target: <code>${config.target}</code>\n` +
-    `Choose how many valid referrals are needed for VIP access:`;
-
-  const keyboard = Markup.inlineKeyboard([
-    [
-      Markup.button.callback('1', 'set_target_1'),
-      Markup.button.callback('5', 'set_target_5')
-    ],
-    [
-      Markup.button.callback('7', 'set_target_7'),
-      Markup.button.callback('10', 'set_target_10')
-    ],
-    [
-      Markup.button.callback('⬅️ Back', 'refresh_admin_panel')
-    ]
-  ]);
-
-  await ctx.answerCbQuery();
-  return ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard });
-});
-
-bot.action(/^set_target_(\d+)$/, async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
-  const target = parseInt(ctx.match[1]);
-  cachedConfig.target = target;
-  configLastFetched = Date.now();
-
-  const db = await getDb();
-  await db.collection('settings').updateOne(
-    { _id: 'config' },
-    { $set: { target_referrals: target } },
-    { upsert: true }
-  );
-
-  await ctx.answerCbQuery(`Target set to ${target}!`);
-  return renderAdminPanel(ctx, true);
-});
-
-// Admin Self-Reset Command
-bot.command('resetme', async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
-  const db = await getDb();
-
-  await db.collection('inviters').updateOne(
-    { _id: ctx.from.id },
-    { $set: { referral_count: 0, vip_claimed: false } }
-  );
-
-  return ctx.reply('✅ <b>Your Inviter Profile has been Reset!</b>\n\nReferral count set to 0 and VIP lock removed. You can now test again.', { parse_mode: 'HTML' });
-});
-
-// Safe Reset Command
-bot.command('reset', async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
-  const parts = ctx.message.text.trim().split(/\s+/);
-  const targetId = parts.length >= 2 ? parseInt(parts[1]) : 8226533559;
-
-  if (isNaN(targetId)) {
-    return ctx.reply('❌ Invalid User ID.');
-  }
-
-  const db = await getDb();
-  const invitee = await db.collection('invitees').findOne({ invitee_id: targetId });
-
-  if (!invitee) {
-    return ctx.reply(`❌ User <code>${targetId}</code> not found in database records.`, { parse_mode: 'HTML' });
-  }
-
-  const statusText = invitee.is_counted ? 'Verified (Counted)' : 'Pending';
-  const confirmText = 
-    `⚠️ <b>Confirm User Reset</b>\n\n` +
-    `Are you sure you want to delete this user from database?\n\n` +
-    `• <b>User ID:</b> <code>${targetId}</code>\n` +
-    `• <b>Invited By:</b> <code>${invitee.inviter_id}</code>\n` +
-    `• <b>Status:</b> ${statusText}\n\n` +
-    `This action will remove the record and deduct 1 point from the inviter.`;
-
-  const keyboard = Markup.inlineKeyboard([
-    [
-      Markup.button.callback('🗑 Yes, Delete', `confirm_del_${targetId}`),
-      Markup.button.callback('❌ Cancel', 'cancel_del')
-    ]
-  ]);
-
-  return ctx.reply(confirmText, { parse_mode: 'HTML', ...keyboard });
-});
-
-bot.action(/^confirm_del_(\d+)$/, async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
-  const targetId = parseInt(ctx.match[1]);
-  const db = await getDb();
-
-  const invitee = await db.collection('invitees').findOne({ invitee_id: targetId });
-  if (!invitee) {
-    await ctx.answerCbQuery('User not found.');
-    return ctx.editMessageText('❌ User already deleted.');
-  }
-
-  if (invitee.is_counted && invitee.inviter_id) {
-    await db.collection('inviters').updateOne(
-      { _id: invitee.inviter_id, referral_count: { $gt: 0 } },
-      { $inc: { referral_count: -1 } }
-    );
-  }
-
-  await db.collection('invitees').deleteOne({ invitee_id: targetId });
-
-  await ctx.answerCbQuery('User reset successfully!');
-  return ctx.editMessageText(
-    `✅ <b>User Reset Successful!</b>\n\n` +
-    `User <code>${targetId}</code> has been removed from database. You can now use this account to test again.`,
-    { parse_mode: 'HTML' }
-  );
-});
-
-bot.action('cancel_del', async (ctx) => {
-  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
-  await ctx.answerCbQuery('Cancelled.');
-  return ctx.editMessageText('🚫 Reset operation cancelled. No changes were made.');
-});
-
-// Webhook Event: Chat Join Request (Tracking Point 1)
+// Tracking Step 1: Join Request on Main Channel
 bot.on('chat_join_request', async (ctx) => {
   try {
     const req = ctx.chatJoinRequest;
-    if (!req) return;
-
-    if (String(req.chat.id) !== MAIN_CHANNEL_ID) return;
+    if (!req || String(req.chat.id) !== MAIN_CHANNEL_ID) return;
 
     const inviteeId = req.from.id;
     const inviteLink = req.invite_link ? req.invite_link.invite_link : null;
     if (!inviteLink) return;
 
     const db = await getDb();
-    const inviter = await db.collection('inviters').findOne({ invite_link: inviteLink });
+    const inviter = await db.collection('event_users').findOne({ invite_link: inviteLink });
     if (!inviter || inviter._id === inviteeId || inviter.vip_claimed) return;
 
     await db.collection('invitees').updateOne(
@@ -565,26 +480,24 @@ bot.on('chat_join_request', async (ctx) => {
       { upsert: true }
     );
   } catch (err) {
-    console.error('chat_join_request handler error:', err);
+    console.error('chat_join_request error:', err);
   }
 });
 
-// Webhook Event: Chat Member Status Change (Tracking Point 2)
+// Tracking Step 2: Member Joins Backup Channel -> Verification +20 XP
 bot.on('chat_member', async (ctx) => {
   try {
     const cm = ctx.chatMember;
-    if (!cm) return;
-
-    if (String(cm.chat.id) !== BACKUP_CHANNEL_ID) return;
+    if (!cm || String(cm.chat.id) !== BACKUP_CHANNEL_ID) return;
 
     const newStatus = cm.new_chat_member ? cm.new_chat_member.status : null;
     const oldStatus = cm.old_chat_member ? cm.old_chat_member.status : null;
 
     if (newStatus === 'member' && ['left', 'kicked'].includes(oldStatus)) {
       const inviteeId = cm.new_chat_member.user.id;
-      const joinedUser = cm.new_chat_member.user;
-      const joinedName = joinedUser.first_name || 'Member';
+      const joinedName = cm.new_chat_member.user.first_name || 'Member';
       const db = await getDb();
+      const cfg = await getEventConfig(db);
 
       const updateResult = await db.collection('invitees').findOneAndUpdate(
         { invitee_id: inviteeId, is_counted: false },
@@ -592,93 +505,387 @@ bot.on('chat_member', async (ctx) => {
         { returnDocument: 'after' }
       );
 
-      const record = updateResult && updateResult.value ? updateResult.value : updateResult;
+      const record = updateResult.value || updateResult;
       if (!record || !record.inviter_id) return;
 
       const inviterId = record.inviter_id;
-      const config = await getConfig(db);
-      const target = config.target;
 
-      const inviterUpdate = await db.collection('inviters').findOneAndUpdate(
+      // Add +20 XP and increment referral_count
+      const userUpdate = await db.collection('event_users').findOneAndUpdate(
         { _id: inviterId },
-        { $inc: { referral_count: 1 } },
+        { $inc: { points: 20, referral_count: 1 } },
         { returnDocument: 'after' }
       );
 
-      const updatedInviter = inviterUpdate && inviterUpdate.value ? inviterUpdate.value : inviterUpdate;
+      const updatedInviter = userUpdate.value || userUpdate;
       if (!updatedInviter) return;
 
-      const currentCount = updatedInviter.referral_count || 0;
+      const currentPts = updatedInviter.points || 0;
       const inviterName = updatedInviter.first_name || 'Inviter';
 
-      // 🔔 Admin Alert: New Verified Referral
-      const adminReferralAlert = 
-        `🔔 <b>New Verified Referral!</b>\n\n` +
-        `👤 <b>Inviter:</b> ${inviterName} (${currentCount} / ${target})\n` +
-        `➕ <b>Joined:</b> ${joinedName}`;
-
-      await ctx.telegram.sendMessage(ADMIN_ID, adminReferralAlert, { parse_mode: 'HTML' }).catch(() => {});
-
-      if (currentCount >= target && !updatedInviter.vip_claimed) {
-        const claimLock = await db.collection('inviters').findOneAndUpdate(
-          { _id: inviterId, vip_claimed: false },
-          { $set: { vip_claimed: true, vip_claimed_at: new Date() } }
-        );
-
-        if (claimLock && (claimLock.value || claimLock._id)) {
-          try {
-            const vipLinkObj = await ctx.telegram.createChatInviteLink(VIP_CHANNEL_ID, {
-              name: `VIP_Claim_${inviterId}`,
-              member_limit: 1
-            });
-
-            // 👑 Admin Alert: VIP Claimed
-            const inviterUsername = updatedInviter.username ? `@${updatedInviter.username}` : 'No username';
-            const adminVipAlert = 
-              `👑 <b>VIP Claimed!</b>\n\n` +
-              `👤 <b>User:</b> ${inviterName} (${inviterUsername})\n` +
-              `🎯 <b>Completed:</b> ${target} / ${target}`;
-
-            await ctx.telegram.sendMessage(ADMIN_ID, adminVipAlert, { parse_mode: 'HTML' }).catch(() => {});
-
-            // Clickable VIP link without preview box
-            const vipMsg = 
-              `👑 <b>Congratulations!</b>\n\n` +
-              `Target completed! ${target} / ${target}\n\n` +
-              `🔗 <b>Your VIP Link:</b>\n` +
-              `${vipLinkObj.invite_link}\n\n` +
-              `⚠️ <i>Note: Single-use link. Do not share!</i>`;
-
-            await ctx.telegram.sendMessage(inviterId, vipMsg, {
-              parse_mode: 'HTML',
-              link_preview_options: { is_disabled: true },
-              disable_web_page_preview: true,
-              ...Markup.inlineKeyboard([
-                [Markup.button.url('👑 Join VIP Channel', vipLinkObj.invite_link)]
-              ])
-            });
-          } catch (vipErr) {
-            console.error('Failed to create VIP invite link:', vipErr);
-          }
-        }
-      } else if (!updatedInviter.vip_claimed) {
-        const progressMsg = 
-          `✅ <b>New Referral Completed!</b>\n\n` +
-          `A friend has joined using your link and unlocked a video.\n\n` +
-          `📊 <b>Current Progress:</b> ${currentCount} / ${target}\n\n` +
-          `Keep going to unlock your VIP link!`;
-
-        await ctx.telegram.sendMessage(inviterId, progressMsg, { parse_mode: 'HTML' }).catch(() => {});
+      // 1. Admin Alert
+      if (ADMIN_ID) {
+        const adminReferralAlert = `🔔 <b>New Verified Referral!</b>\n\n` +
+          `👤 <b>Inviter:</b> ${inviterName} (${currentPts} / ${cfg.target_points} XP)\n` +
+          `➕ <b>Joined User:</b> ${joinedName}\n` +
+          `⚡️ <b>Added:</b> +20 XP`;
+        bot.telegram.sendMessage(ADMIN_ID, adminReferralAlert, { parse_mode: 'HTML' }).catch(() => {});
       }
+
+      // 2. Inviter Instant Notification
+      const refSuccessMsg = `🎉 <b>New Referral Completed!</b>\n\n` +
+        `යාලුවෙක් ඔබේ link එකෙන් සම්බන්ධ වීම තහවුරු විය!\n` +
+        `➕ <b>+20 XP</b> ඔබේ ගිණුමට එකතු විය.\n\n` +
+        `📊 <b>Total XP:</b> <b>${currentPts} / ${cfg.target_points} XP</b>`;
+
+      await bot.telegram.sendMessage(inviterId, refSuccessMsg, {
+        parse_mode: 'HTML',
+        ...Markup.inlineKeyboard([[Markup.button.callback('🏆 Leader Board', 'view_leaderboard')]])
+      }).catch(() => {});
+
+      // 3. Check for VIP Win
+      await evaluateWinner(db, cfg, updatedInviter);
     }
   } catch (err) {
-    console.error('chat_member handler error:', err);
+    console.error('chat_member error:', err);
   }
 });
 
-// Vercel Serverless Function Handler
+// Shared VIP Award Evaluator
+async function evaluateWinner(db, cfg, user) {
+  if (user.points >= cfg.target_points && !user.vip_claimed) {
+    if (cfg.claimed_winners < cfg.max_winners) {
+      const confUpdate = await db.collection('event_config').findOneAndUpdate(
+        { _id: 'main_event', claimed_winners: { $lt: cfg.max_winners } },
+        { $inc: { claimed_winners: 1 } },
+        { returnDocument: 'after' }
+      );
+
+      const currentSlot = (confUpdate.value || confUpdate).claimed_winners;
+
+      if (confUpdate.value || confUpdate) {
+        await db.collection('event_users').updateOne(
+          { _id: user._id },
+          { $set: { vip_claimed: true, vip_claimed_at: new Date() } }
+        );
+
+        // 24h single-use VIP link
+        const expireDate = Math.floor(Date.now() / 1000) + (24 * 60 * 60);
+        const invite = await bot.telegram.createChatInviteLink(VIP_CHANNEL_ID, {
+          member_limit: 1,
+          expire_date: expireDate
+        });
+
+        const winMsg = `🏆 <b>Congratulations!</b>\n\n` +
+          `You are one of the first ${cfg.max_winners} winners to reach the target!\n\n` +
+          `🔗 <a href="${invite.invite_link}">Join VIP Channel</a>\n` +
+          `<i>(Valid for 1 person / 24 hours only)</i>`;
+
+        await bot.telegram.sendMessage(user._id, winMsg, {
+          parse_mode: 'HTML',
+          ...Markup.inlineKeyboard([[Markup.button.url('👑 Join VIP Channel', invite.invite_link)]])
+        }).catch(() => {});
+
+        if (ADMIN_ID) {
+          const uNameText = user.username ? `@${user.username}` : 'No username';
+          const fNameText = user.first_name || 'User';
+          const adminAlert = `🚨 <b>New VIP Winner Claimed!</b>\n\n` +
+            `• <b>Slot:</b> ${currentSlot} / ${cfg.max_winners}\n` +
+            `• <b>Name:</b> ${fNameText}\n` +
+            `• <b>Username:</b> ${uNameText}\n` +
+            `• <b>User ID:</b> <code>${user._id}</code>\n` +
+            `• <b>Points:</b> ${user.points} XP`;
+
+          bot.telegram.sendMessage(ADMIN_ID, adminAlert, { parse_mode: 'HTML' }).catch(() => {});
+        }
+      }
+    } else {
+      await bot.telegram.sendMessage(user._id, '⏳ <b>VIP Slots Full!</b>\n\nAll winners have already claimed their VIP access.', { parse_mode: 'HTML' }).catch(() => {});
+    }
+  }
+}
+
+// --- Claim Handler (From File Bot - Asynchronous Non-Blocking) ---
+
+async function processClaimInBackground(userId, fileKey) {
+  try {
+    const db = await getDb();
+    const cfg = await getEventConfig(db);
+
+    if (cfg.event_end_date) {
+      const endTimestamp = new Date(`${cfg.event_end_date}T23:59:59+05:30`).getTime();
+      if (!isNaN(endTimestamp) && Date.now() > endTimestamp) return;
+    }
+
+    const user = await db.collection('event_users').findOne({ _id: Number(userId) });
+    if (!user) return;
+
+    if (user.claimed_files && user.claimed_files.includes(String(fileKey))) return;
+
+    const updateRes = await db.collection('event_users').findOneAndUpdate(
+      { _id: Number(userId), claimed_files: { $ne: String(fileKey) } },
+      { 
+        $push: { claimed_files: String(fileKey) },
+        $inc: { points: 1 }
+      },
+      { returnDocument: 'after' }
+    );
+
+    const updatedUser = updateRes.value || updateRes;
+    if (updatedUser) {
+      await evaluateWinner(db, cfg, updatedUser);
+    }
+  } catch (err) {
+    console.error('processClaimInBackground error:', err.message);
+  }
+}
+
+// --- Admin Control Panel Handlers ---
+
+async function buildAdminPanel(db, cfg) {
+  const [totalRegistered, totalVerifiedRef, totalPointsAgg] = await Promise.all([
+    db.collection('event_users').countDocuments(),
+    db.collection('invitees').countDocuments({ is_counted: true }),
+    db.collection('event_users').aggregate([{ $group: { _id: null, totalPoints: { $sum: "$points" } } }]).toArray()
+  ]);
+
+  const totalPoints = totalPointsAgg.length > 0 ? totalPointsAgg[0].totalPoints : 0;
+  const totalVideoUnlocks = Math.max(0, totalPoints - (totalVerifiedRef * 20));
+
+  const text = `⚙️ <b>Event Control Panel</b>\n\n` +
+    `• Registration: ${cfg.reg_enabled ? '🟢 OPEN' : '🔴 CLOSED'}\n` +
+    `• Referrals: ${cfg.referrals_enabled ? '🟢 ACTIVE' : '🔴 PAUSED'}\n` +
+    `• Event End Date: ${cfg.event_end_date || 'Not Set'}\n` +
+    `• Target Points: ${cfg.target_points} XP\n` +
+    `• VIP Slots: ${cfg.claimed_winners} / ${cfg.max_winners} Claimed\n\n` +
+    `👥 <b>Registered Users:</b> ${totalRegistered}\n` +
+    `🔓 <b>Total Video Unlocks:</b> ${totalVideoUnlocks}\n` +
+    `🤝 <b>Total Verified Referrals:</b> ${totalVerifiedRef}`;
+
+  const keyboard = Markup.inlineKeyboard([
+    [
+      Markup.button.callback(`Reg: ${cfg.reg_enabled ? '🟢 ON' : '🔴 OFF'}`, 'toggle_reg'),
+      Markup.button.callback(`Referrals: ${cfg.referrals_enabled ? '🟢 ON' : '🔴 OFF'}`, 'toggle_referrals')
+    ],
+    [
+      Markup.button.callback('📅 Set End Date', 'admin_pick_date'),
+      Markup.button.callback('🎯 Set Target', 'admin_set_target')
+    ],
+    [
+      Markup.button.callback('🖼 Set Banner', 'prompt_banner_upload'),
+      Markup.button.callback('🔄 Refresh Panel', 'refresh_admin_panel')
+    ],
+    [
+      Markup.button.callback('🔄 Reset Event Data', 'admin_reset_confirm')
+    ]
+  ]);
+
+  return { text, keyboard };
+}
+
+bot.command('admin', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
+  const db = await getDb();
+  const cfg = await getEventConfig(db);
+  const { text, keyboard } = await buildAdminPanel(db, cfg);
+  return ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+});
+
+bot.action('refresh_admin_panel', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  cachedConfig = null;
+  const db = await getDb();
+  const cfg = await getEventConfig(db);
+  const { text, keyboard } = await buildAdminPanel(db, cfg);
+  await ctx.answerCbQuery('Updated!');
+  return ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard }).catch(() => {});
+});
+
+bot.action('toggle_reg', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  const db = await getDb();
+  const cfg = await getEventConfig(db);
+  await db.collection('event_config').updateOne({ _id: 'main_event' }, { $set: { reg_enabled: !cfg.reg_enabled } });
+  cachedConfig = null;
+  const newCfg = await getEventConfig(db);
+  const { text, keyboard } = await buildAdminPanel(db, newCfg);
+  await ctx.answerCbQuery('Updated!');
+  return ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard }).catch(() => {});
+});
+
+bot.action('toggle_referrals', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  const db = await getDb();
+  const cfg = await getEventConfig(db);
+  await db.collection('event_config').updateOne({ _id: 'main_event' }, { $set: { referrals_enabled: !cfg.referrals_enabled } });
+  cachedConfig = null;
+  const newCfg = await getEventConfig(db);
+  const { text, keyboard } = await buildAdminPanel(db, newCfg);
+  await ctx.answerCbQuery('Updated!');
+  return ctx.editMessageText(text, { parse_mode: 'HTML', ...keyboard }).catch(() => {});
+});
+
+bot.action('admin_pick_date', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  const db = await getDb();
+  const cfg = await getEventConfig(db);
+  await ctx.answerCbQuery();
+  return ctx.reply(`⏱️ <b>Select Event Duration:</b>\n\n📌 <b>Current End Date:</b> ${cfg.event_end_date || 'Not Set'}`, {
+    parse_mode: 'HTML',
+    ...Markup.inlineKeyboard([
+      [Markup.button.callback('+7 Days', 'set_days_7'), Markup.button.callback('+14 Days', 'set_days_14')],
+      [Markup.button.callback('+30 Days', 'set_days_30'), Markup.button.callback('❌ Clear Date', 'set_days_clear')],
+      [Markup.button.callback('🔙 Back to Panel', 'admin_back_to_panel')]
+    ])
+  });
+});
+
+async function applyDays(ctx, days) {
+  const db = await getDb();
+  let dateStr = null;
+  if (days > 0) {
+    const futureTimestamp = Date.now() + (days * 24 * 60 * 60 * 1000);
+    dateStr = getSLDateOnlyString(futureTimestamp);
+  }
+  await db.collection('event_config').updateOne({ _id: 'main_event' }, { $set: { event_end_date: dateStr } });
+  cachedConfig = null;
+  await ctx.answerCbQuery('Date Updated!');
+  return ctx.reply(`✅ Event End Date set to: <b>${dateStr || 'Cleared'}</b>`, { parse_mode: 'HTML' });
+}
+
+bot.action('set_days_7', (ctx) => applyDays(ctx, 7));
+bot.action('set_days_14', (ctx) => applyDays(ctx, 14));
+bot.action('set_days_30', (ctx) => applyDays(ctx, 30));
+bot.action('set_days_clear', (ctx) => applyDays(ctx, 0));
+
+bot.action('admin_back_to_panel', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  await ctx.answerCbQuery();
+  const db = await getDb();
+  const cfg = await getEventConfig(db);
+  const { text, keyboard } = await buildAdminPanel(db, cfg);
+  return ctx.reply(text, { parse_mode: 'HTML', ...keyboard });
+});
+
+bot.action('admin_set_target', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  const db = await getDb();
+  await db.collection('event_config').updateOne({ _id: 'main_event' }, { $set: { admin_state: 'awaiting_target' } });
+  await ctx.answerCbQuery();
+  return ctx.reply('Send target XP number (e.g. 200).\n\nSend /cancel to abort.');
+});
+
+// Set Banner Image
+bot.action('prompt_banner_upload', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  const db = await getDb();
+  await db.collection('event_config').updateOne({ _id: 'main_event' }, { $set: { admin_state: 'awaiting_banner' } });
+  await ctx.answerCbQuery();
+  return ctx.reply('🖼 <b>Send New Banner Image</b>\n\nSend the photo to this chat now.\nSend /cancel to abort.', { parse_mode: 'HTML' });
+});
+
+bot.on('photo', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
+  const db = await getDb();
+  const cfg = await getEventConfig(db);
+
+  if (cfg.admin_state === 'awaiting_banner') {
+    const photos = ctx.message.photo;
+    const bestPhoto = photos[photos.length - 1];
+    await db.collection('event_config').updateOne(
+      { _id: 'main_event' },
+      { $set: { banner_file_id: bestPhoto.file_id }, $unset: { admin_state: '' } }
+    );
+    cachedConfig = null;
+    return ctx.reply('✅ <b>Banner photo updated successfully!</b>', { parse_mode: 'HTML' });
+  }
+});
+
+// Full Wipe / Reset Confirmation
+bot.action('admin_reset_confirm', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  await ctx.answerCbQuery();
+  return ctx.reply(
+    '⚠️ <b>Warning: Permanent Full Database Action!</b>\n\n' +
+    'This will completely wipe:\n' +
+    '• All registered users & points\n' +
+    '• All unlocked video claims\n' +
+    '• All pending & verified referrals\n' +
+    '• Reset VIP claimed slots to 0\n\n' +
+    'Are you sure you want to proceed?',
+    {
+      parse_mode: 'HTML',
+      ...Markup.inlineKeyboard([
+        [Markup.button.callback('🗑 Yes, Wipe Everything', 'admin_reset_execute')],
+        [Markup.button.callback('❌ Cancel', 'admin_reset_abort')]
+      ])
+    }
+  );
+});
+
+bot.action('admin_reset_abort', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  await ctx.answerCbQuery('Reset cancelled.');
+  return ctx.deleteMessage().catch(() => {});
+});
+
+bot.action('admin_reset_execute', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return ctx.answerCbQuery('Unauthorized');
+  const db = await getDb();
+  
+  // Wipe all 3 collections simultaneously
+  await Promise.all([
+    db.collection('event_users').deleteMany({}),
+    db.collection('invitees').deleteMany({}),
+    db.collection('inviters').deleteMany({}),
+    db.collection('event_config').updateOne({ _id: 'main_event' }, { $set: { claimed_winners: 0 } })
+  ]);
+
+  cachedConfig = null;
+  await ctx.answerCbQuery('Database Wiped!');
+  return ctx.reply('✅ <b>All event & referral data has been permanently deleted and reset.</b>', { parse_mode: 'HTML' });
+});
+
+bot.command('cancel', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
+  const db = await getDb();
+  await db.collection('event_config').updateOne({ _id: 'main_event' }, { $unset: { admin_state: '' } });
+  return ctx.reply('🚫 Operation cancelled.');
+});
+
+bot.on('text', async (ctx) => {
+  if (!ctx.from || String(ctx.from.id) !== ADMIN_ID) return;
+  const db = await getDb();
+  const cfg = await getEventConfig(db);
+
+  if (cfg.admin_state === 'awaiting_target') {
+    const pts = parseInt(ctx.message.text.trim(), 10);
+    if (isNaN(pts) || pts <= 0) return ctx.reply('❌ Invalid number.');
+    await db.collection('event_config').updateOne(
+      { _id: 'main_event' },
+      { $set: { target_points: pts }, $unset: { admin_state: '' } }
+    );
+    cachedConfig = null;
+    return ctx.reply(`✅ Target Points set to: <b>${pts} XP</b>`, { parse_mode: 'HTML' });
+  }
+});
+
+// --- Vercel Serverless Entry Point ---
+
 module.exports = async (req, res) => {
   if (req.method === 'POST') {
+    // 1. Instant Fire-and-Forget Response for File Bot
+    if (req.url.includes('/api/claim') || (req.body && req.body.fileKey)) {
+      res.status(200).json({ ok: true });
+      const { userId, fileKey } = req.body || {};
+      if (userId && fileKey) {
+        processClaimInBackground(userId, fileKey).catch((e) => console.error('BG Claim Error:', e));
+      }
+      return;
+    }
+
+    // 2. Telegram Webhook Updates
+    initSystem().catch(() => {});
     try {
       let body = req.body;
       if (typeof body === 'string') {
@@ -692,5 +899,8 @@ module.exports = async (req, res) => {
     }
     return res.status(200).send('OK');
   }
-  return res.status(200).send('VIP Referral Bot is Running Active!');
+
+  // GET request (Health Check)
+  await initSystem().catch(() => {});
+  return res.status(200).send('Hot Lanka Event Bot is Running and Webhook is Active!');
 };
